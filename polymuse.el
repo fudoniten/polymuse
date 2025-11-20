@@ -9,7 +9,7 @@
 ;; Version: 0.0.1
 ;; Keywords: docs outlines processes terminals text tools
 ;; Homepage: https://github.com/niten/polymuse
-;; Package-Requires: ((emacs "29.3") (gptel "0.9"))
+;; Package-Requires: ((emacs "29.3"))
 ;;
 ;; This file is not part of GNU Emacs.
 ;;
@@ -19,19 +19,26 @@
 ;;
 ;;; Code:
 
+(add-to-list 'load-path
+             (file-name-directory (or load-file-name buffer-file-name)))
+
 (require 'gptel)
+(require 'gptel-ollama)
 (require 'cl-lib)
-(require 'uri)
 (require 'json)
+(require 'seq)
+(require 'subr-x)
+(require 'url)
+(require 'typewrite)
 
 (define-minor-mode polymuse-mode
-  "LLM over-the-sholder assistant."
+  "LLM over-the-shoulder assistant."
   :init-value nil
   :lighter "PolyMuse"
   :keymap (make-sparse-keymap)
   (if polymuse-mode
-      (polymuse-mode--enable)
-    (polymuse-mode--disable)))
+      (polymuse--enable)
+    (polymuse--disable)))
 
 (defgroup polymuse nil
   "LLM over-the-shoulder assistant."
@@ -45,16 +52,16 @@
   "Ollama backend host for use with polymuse."
   :type 'string)
 
-(defcustom polymuse-ollama-protocol "http"
+(defcustom polymuse-ollama-protocol "https"
   "Protocol with which to interact with polymuse."
   :type 'string)
 
-(defcustom polymuse-ollama-models '()
-  "Ollama models for use with polymuse."
-  :type '(string))
-
-(defcustom polymuse--max-prompt-characters 18000
+(defcustom polymuse--max-prompt-characters 12000
   "Maximum length of a prompt, in characters."
+  :type 'integer)
+
+(defcustom polymuse-default-review-context-lines 20
+  "Number of previous lines of review to include with the prompt."
   :type 'integer)
 
 (defcustom polymuse-default-buffer-size-limit 8196
@@ -70,6 +77,9 @@ When the buffer grows larger than this, the beginning will be truncated."
 (defvar polymuse--idle-timer nil
   "Driver timer for active Polymuse reviewers.")
 
+(defvar polymuse--debug nil
+  "Enable Polymuse debug mode.")
+
 ;;;;
 ;; BACKENDS
 ;;;;
@@ -77,51 +87,77 @@ When the buffer grows larger than this, the beginning will be truncated."
 (defvar polymuse-backends '()
   "Alist of (ID . BACKEND) pairs of Polymuse backends.")
 
+(defun polymuse-list-backends ()
+  "Return a list of all available Polymuse backends."
+  (interactive)
+  (mapcar #'car polymuse-backends))
+
 (cl-defstruct polymuse-backend-spec
   id
   model)
 
-(cl-defstruct (polymuse-gptel-backend-spec (:include polymuse-backend-spec))
+(cl-defstruct (polymuse-ollama-backend-spec (:include polymuse-backend-spec))
   host
   protocol)
 
+(cl-defstruct (polymuse-openai-backend-spec (:include polymuse-backend-spec)))
+
 (cl-defstruct polymuse-backend
-  id      ;; unique id for this backend
+  id     ;; unique id for this backend
   model)  ;; model name string
 
 (cl-defstruct (polymuse-gptel-backend (:include polymuse-backend))
   executor)
 
-(cl-defgeneric polymuse--initialize-backend (backend)
-  "Given a Polymuse BACKEND spec, initialize it.")
+(cl-defgeneric polymuse--initialize-backend (spec)
+  "Given a Polymuse backend SPEC, initialize it.")
 
 (defun polymuse-create-ollama-executor (name host model &optional protocol)
   "Set up Polymuse Ollama backend NAME for HOST with MODEL over PROTOCOL."
   (gptel-make-ollama name
-                     :host     host
-                     :protocol (or protocol "http")
-                     :models   (list model)))
+    :host     host
+    :protocol (or protocol "https")
+    :models   (list model)))
 
-(cl-defmethod polymuse--initialize-backend ((backend-spec polymuse-gptel-backend-spec))
-  "Instantiate gptel BACKEND-SPEC."
-  (let ((id       (polymuse-backend-spec-id backend-spec))
-        (existing (alist-get id polymuse-backends nil nil #'equal)))
+(defun polymuse-create-openai-executor (name model)
+  "Set up Polymuse Ollama backend NAME for HOST with MODEL over PROTOCOL."
+  (gptel-make-openai name :models (list model)))
+
+(cl-defmethod polymuse--initialize-backend ((spec polymuse-ollama-backend-spec))
+  "Instantiate ollama gptel backend from SPEC."
+  (let* ((id       (polymuse-backend-spec-id spec))
+         (existing (alist-get id polymuse-backends)))
     (if existing
         existing
-      (let* ((model    (polymuse-backend-spec-model backend-spec))
-             (host     (polymuse-gptel-backend-spec-host backend-spec))
-             (protocol (polymuse-gptel-backend-spec-protocol backend-spec))
+      (let* ((model    (polymuse-backend-spec-model spec))
+             (host     (polymuse-ollama-backend-spec-host spec))
+             (protocol (polymuse-ollama-backend-spec-protocol spec))
              (backend  (make-polymuse-gptel-backend
                         :id       id
                         :model    model
                         :executor (polymuse-create-ollama-executor id host model protocol))))
-        (setf (alist-get id polymuse-backends nil nil #'equal)
+        (setf (alist-get id polymuse-backends)
               backend)
         backend))))
 
-(defcustom polymuse-default-backend nil
+(cl-defmethod polymuse--initialize-backend ((spec polymuse-openai-backend-spec))
+  "Instantiate openai gptel backend from SPEC."
+  (let* ((id       (polymuse-backend-spec-id spec))
+         (existing (alist-get id polymuse-backends)))
+    (if existing
+        existing
+      (let* ((model    (polymuse-backend-spec-model spec))
+             (backend  (make-polymuse-gptel-backend
+                        :id       id
+                        :model    model
+                        :executor (polymuse-create-openai-executor id model))))
+        (setf (alist-get id polymuse-backends)
+              backend)
+        backend))))
+
+(defcustom polymuse-default-backend-id nil
   "ID of default backend for Polymuse."
-  :type 'string)
+  :type 'symbol)
 
 (defun polymuse--interactive-setup-default-backend ()
   "Interactively create a default Polymuse backend, returning it.
@@ -132,15 +168,37 @@ Currently defaults to Ollama and prompts for host + model."
                         '("Ollama" "OpenAI")
                         nil t nil nil "Ollama")))
     (pcase backend-type
-      ("Ollama" (setq polymuse-default-backend (polymuse--setup-ollama-backend)))
-      ("OpenAI" (setq polymuse-default-backend (polymuse--setup-openai-backend))))))
+      ("Ollama" (setq polymuse-default-backend-id (polymuse--setup-ollama-backend)))
+      ("OpenAI" (setq polymuse-default-backend-id (polymuse--setup-openai-backend))))))
 
-(defun polymuse-ollama-list-models (host)
-  "Return a list of available Ollama model names from HOST.
+(defun polymuse-define-default-backend ()
+  "Interactively define the default Polymuse backend."
+  (interactive)
+  (let ((backend (polymuse--interactive-setup-default-backend)))
+    (message "Set default Polymuse backend to %s" (polymuse-backend-id backend))))
+
+(defun polymuse--delete-backend (backend-id)
+  "Remove BACKEND-ID from Polymuse backends."
+  (cl-remove backend-id
+             polymuse-backends
+             :key  #'polymuse-backend-id
+             :test #'eq))
+
+(defun polymuse-delete-backend ()
+  "Delete backend specified by user from Polymuse."
+  (interactive)
+  (let* ((choice-id (completing-read "Remove backend: "
+                                     (mapcar #'car polymuse-backends) nil t))
+         (backend   (cdr (alist-get choice-id polymuse-backends))))
+    (unless backend (user-error "No review found for id: %s" choice-id))
+    (polymuse--delete-backend choice-id)))
+
+(defun polymuse-ollama-list-models (host &optional protocol)
+  "Return a list of available Ollama model names from HOST over PROTOCOL.
 
 HOST should be like \"localhost:11434\"."
   (let* ((url-request-method "GET")
-         (url (format "http://%s/api/tags" host))
+         (url (format "%s://%s/api/tags" (or protocol "https") host))
          (buf (url-retrieve-synchronously url t t 5))) ;; 5s timeout
     (when buf
       (unwind-protect
@@ -148,29 +206,45 @@ HOST should be like \"localhost:11434\"."
             (goto-char (point-min))
             (when (re-search-forward "\n\n" nil t)
               (let* ((json (json-parse-buffer
-                            :object-type 'alist
-                            :array-type 'list
-                            :null-object nil
+                            :object-type  'alist
+                            :array-type   'list
+                            :null-object  nil
                             :false-object nil))
                      (models (alist-get 'models json)))
                 (mapcar (lambda (m) (alist-get 'name m))
-                        models)))
-            (kill-buffer buf))))))
+                        models))))
+        (kill-buffer buf)))))
+
+(defun polymuse--format-json (json-string)
+  "Given a JSON string JSON-STRING, return a pretty-printed version."
+  (with-temp-buffer
+    (insert json-string)
+    (json-pretty-print-buffer)
+    (buffer-string)))
+
+(defun polymuse--setup-openai-backend ()
+  "Interactively create an OpenAI polymuse backend using gptel."
+  (let* ((model (read-string "OpenAI model (e.g. gpt-4.1-mini): " "gpt-4.1-mini"))
+         (gptel-backend (gptel-make-openai "polymuse-openai"))
+         (id (intern (format "openai-%s" model)))
+         (spec (make-polymuse-openai-backend-spec :id id :model model)))
+    (polymuse--initialize-backend spec)
+    id))
 
 (defun polymuse--setup-ollama-backend ()
   "Interactively create an Ollama polymuse backend using gptel."
   (let* ((host   (read-string "Ollama host (host:port): " "localhost:11434"))
          (protocol (completing-read "Ollama protocol: "
                                     '("http" "https")
-                                    nil t nil nil "http"))
-         (models (or (polymuse-ollama-list-models host)
+                                    nil t nil nil "https"))
+         (models (or (polymuse-ollama-list-models host protocol)
                      (list (read-string "Model name: "))))
          (model  (completing-read "Ollama model: " models nil t))
-         (id     (format "ollama-%s" model))
-         (spec   (make-polymuse-gptel-backend-spec :id       id
-                                                   :host     host
-                                                   :protocol protocol
-                                                   :model    model)))
+         (id     (intern (format "ollama-%s" model)))
+         (spec   (make-polymuse-ollama-backend-spec :id       id
+                                                    :host     host
+                                                    :protocol protocol
+                                                    :model    model)))
     (polymuse--initialize-backend spec)
     id))
 
@@ -181,7 +255,10 @@ HOST should be like \"localhost:11434\"."
   last-hash         ;; string hash of buffer contents on last run
   buffer-size-limit ;; max length in chars of suggestion buffer
   output-buffer     ;; suggestion buffer
-  backend)           ;; backend to which requests will be sent
+  instructions      ;; special instructions for this reviewer
+  backend           ;; backend to which requests will be sent
+  review-context    ;; lines of review context to include
+  source-buffer)    ;; The buffer under review
 
 (define-error 'polymuse-json-error "Polymuse JSON parse error")
 
@@ -201,6 +278,25 @@ Signals `polymuse-json-error' if parsing fails or the field is missing."
     (error (signal 'polymuse-json-error
                    (list "Failed to parse JSON from LLM response" err response)))))
 
+(defun polymuse--format-response (response &optional width)
+  "Wrap each paragraph in RESPONSE to WIDTH columns, preserving linebreaks."
+  (let ((fill-column (or width 80)))
+    (with-temp-buffer
+      (insert response)
+      (goto-char (point-min))
+      (while (not (eobp))
+        ;; Skip blank lines
+        (skip-chars-forward "\n")
+        (let ((start (point)))
+          (forward-paragraph)
+          (fill-region start (point))))
+      (buffer-string))))
+
+(defun polymuse-toggle-debug ()
+  "Toggle Polymuse debug mode."
+  (interactive)
+  (setq polymuse--debug (not polymuse--debug)))
+
 (cl-defgeneric polymuse-request-review (backend request &key system callback &allow-other-keys)
   "Execute REQUEST to the given BACKEND, calling CALLBACK upon completion.")
 
@@ -210,14 +306,29 @@ Signals `polymuse-json-error' if parsing fails or the field is missing."
          (callback (plist-get args :callback))
          (executor (polymuse-gptel-backend-executor backend))
          (model    (or (plist-get args :model)
-                       (polymuse-backend-model backend))))
-    (gptel-request request
-      :system   system
-      :backend  executor
-      :model    model
-      :callback (lambda (resp info)
-                  (let ((review (polymuse--extract-json-review resp)))
-                    (when callback (funcall callback review info)))))))
+                       (polymuse-backend-model backend)))
+         (handler  (lambda (resp info)
+                     (let ((formatted (polymuse--format-response resp)))
+                       (when polymuse--debug
+                         (with-current-buffer (get-buffer-create "*polymuse-debug*")
+                           (insert "\n\nRESPONSE:\n\n")
+                           (insert formatted)
+                           (insert "\n\nEND RESPONSE\n\n")))
+                       (when callback (funcall callback formatted info))))))
+    (when polymuse--debug
+      (with-current-buffer (get-buffer-create "*polymuse-debug*")
+        (insert "\n\nREQUEST:\n\n")
+        (insert (polymuse--format-json (json-serialize request)))
+        (insert "\n\nEND REQUEST\n\n")))
+    (let ((gptel-backend executor)
+          (gptel-model   model))
+      (gptel-request request
+        :system   system
+        :callback handler))))
+
+(defun polymuse-find-backend (backend-id)
+  "Given a BACKEND-ID, find the associated Polymuse backend."
+  (alist-get backend-id polymuse-backends nil nil #'eq))
 
 (defun polymuse-ensure-backend (&optional backend-id)
   "Return a backend for the current buffer, prompting on first use.
@@ -230,22 +341,10 @@ necessary."
       ;; Buffer-local default
       (when polymuse-default-backend-id
         (polymuse-find-backend polymuse-default-backend-id))
-      polymuse-default-backend
-      (let ((backend (polymuse--interactive-setup-default-backend)))
-        (setq polymuse-default-backend backend)
-        (push backend polymuse-backends)
-        (setq polymuse-default-backend-id (polymuse-backend-id backend))
-        backend)))
+      (let ((id (polymuse--interactive-setup-default-backend)))
+        (polymuse-find-backend id))))
 
-(defun polymuse-find-backend (backend-id)
-  "Find backend with given BACKEND-ID among buffer-local backends or global default."
-  (or (seq-find (lambda (b) (eq (polymuse-backend-id b) backend-id))
-                polymuse-backends)
-      (and polymuse-default-backend
-           (eq (polymuse-backend-id polymuse-default-backend) backend-id)
-           polymuse-default-backend)))
-
-(defun truncate-buffer-to-length (buffer max-chars)
+(defun polymuse--truncate-buffer-to-length (buffer max-chars)
   "Truncate BUFFER from the top so it is at most MAX-CHARS characters long.
 
 Deletion is done in whole lines starting at `point-min`.
@@ -272,65 +371,38 @@ recenter those windows."
             (when (> excess 0)
               ;; Where are we allowed to delete without changing
               ;; what’s currently on-screen?
-              (let* ((wins (get-buffer-window-list (current-buffer) nil t))
-                     (min-start (when wins
-                                  (apply #'min
-                                         (mapcar (lambda (w)
-                                                   (marker-position
-                                                    (window-start w)))
-                                                 wins))))
-                     ;; Max buffer position we can delete up to without
-                     ;; touching visible text.
-                     (safe-limit (when min-start
-                                   (1- min-start)))
-                     ;; We *need* to delete EXCESS chars to meet the limit.
-                     ;; First try to keep deletion entirely before the first
-                     ;; visible char; if that’s impossible, we accept that
-                     ;; visible text will be truncated.
-                     (delete-end (if (and safe-limit
-                                          (<= (+ (point-min) excess)
-                                              safe-limit))
-                                     (+ (point-min) excess)
-                                   (+ (point-min) excess))))
-                ;; Extend to end of line (we remove whole lines).
-                (goto-char delete-end)
-                (end-of-line)
-                (setq delete-end (min (point-max) (point)))
-                (when (> delete-end (point-min))
-                  (delete-region (point-min) delete-end)))))))))))
-
-;; (defun polymuse--setup-openai-backend ()
-;;   "Interactively create an OpenAI polymuse backend using gptel."
-;;   (require 'gptel)
-;;   (let* ((model (read-string "OpenAI model (e.g. gpt-4.1-mini): " "gpt-4.1-mini"))
-;;          (gptel-backend (gptel-make-openai "polymuse-openai")))
-;;     (make-polymuse-backend
-;;      :id :openai-default
-;;      :provider :openai
-;;      :gptel-backend gptel-backend
-;;      :model model)))
+              (let* ((size   (buffer-size))
+                     (excess (- size max-chars)))
+                (when (> excess 0)
+                  (let ((delete-end (+ (point-min) excess)))
+                    (goto-char delete-end)
+                    (end-of-line)
+                    (setq delete-end (min (point-max) (point)))
+                    (when (> delete-end (point-min))
+                      (delete-region (point-min) delete-end))))))))))))
 
 (defcustom polymuse-model nil
   "Model to use with polymuse."
   :type 'string)
 
 (defcustom polymuse-system-prompt
-  (string-join " "
-               '("You are an over-the-shoulder reviewer."
-                 "Provide feedback on the content provided,"
-                 "aimed to guide and advice the writer."
-                 "Be friendly and polite. Give specific examples."
-                 "Reply in STRICT JSON, providing the key `review',"
-                 "like this:"
-                 "{ \"review\": \"<your textual feedback here>\" }")
-               "Base system prompt for polymuse."
-               :type 'string))
+  (string-join
+   '("You are an over-the-shoulder reviewer. Provide feedback and advice on the"
+     "content provided, according to further instructions. Respond in Emacs"
+     "`org-mode' format, or in plain text.")
+   " ")
+  "Base system prompt for polymuse."
+  :type 'string)
 
 (defcustom polymuse-mode-prompts
-  '((prog-mode . "Provide feedback on the code below. Focus on clarity, reuse, improvements, library suggestions and general quality.")
-    (text-mode . "Provide feedback on the prose content below. Suggest style improvements for clarity, layout suggestions, vocabulary improvements, plot suggetions, continuity fixes, character motivations, etc."))
+  '((prog-mode . "Provide feedback on the code in the `current.focus-region' field below. Focus on clarity, reuse, improvements, library suggestions and general quality. This is part of an ongoing stream of advice.")
+    (text-mode . "Provide feedback on the prose content in the `current.focus-region' field below. This is part of an ongoing stream of advice."))
   "Mode-specific prompt for the polymuse over-the-shoulder assistant."
   :type '(alist :key-type symbol :value-type string))
+
+(defun polymuse--code-mode-p ()
+  "Return non-nil when the current major mode is derived from PROG-MODE."
+  (derived-mode-p 'prog-mode))
 
 (defun polymuse-get-mode-prompt ()
   "Return the appropriate prompt for the current major mode."
@@ -340,11 +412,8 @@ recenter those windows."
                 polymuse-mode-prompts)
       (cdr (assq 'text-mode polymuse-mode-prompts))))
 
-(defvar-local polymuse-local-prompt nil
-  "Optional buffer-local override of the prompt for polymuse.")
-
 (defvar-local polymuse--unit-grabber nil
-  "Function to grab the 'unit' (paragraph or sexp) around the point.")
+  "Function to grab the unit (paragraph or sexp) around the point.")
 
 (defvar-local polymuse--next-context-grabber nil
   "Function to grab the context following the point, in units.")
@@ -359,12 +428,14 @@ recenter those windows."
   arguments)
 
 (defvar-local polymuse-local-tools '()
-  "Tools to expose to the LLM, specific to the local buffer. Should be a list of POLYMUSE-TOOL.")
+  "Tools to expose to the LLM, specific to the local buffer.
+
+Contains an alist of (FUN-NAME . FUN).")
 
 (defvar-local polymuse--reviews '()
   "List of all `polymuse-review-state' structs associated with this buffer.")
 
-(defvar-local polymuse-final-instruction ""
+(defvar-local polymuse-final-instructions ""
   "Instructions to pass at the very end of the prompt.")
 
 (defun polymuse--collect-units-to-limit (limit start get-next)
@@ -379,9 +450,10 @@ should either:
     one, or
   - Return nil if no further unit is available.
 
-This returns the *largest* region whose length does not exceed LIMIT characters.
-If GET-NEXT never manages to grow the region without going over LIMIT, the result
-is NIL. Callers can detect this case and fall back to a raw substring if needed."
+This returns the *largest* region whose length does not exceed LIMIT
+characters. If GET-NEXT never manages to grow the region without going
+over LIMIT, the result is NIL. Callers can detect this case and fall
+back to a raw substring if needed."
   (let* ((region (cons start start))
          (best   nil) ;; nil = no acceptable region yet
          (best-len 0)
@@ -447,60 +519,88 @@ e.g. `forward-paragraph` or `forward-sexp`."
 
 Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
   (with-current-buffer (or buffer (current-buffer))
-    (when-let* ((range
-                 (polymuse--collect-units-to-limit limit (or pt (point))
-                                                   (polymuse--make-get-prev-wrapper #'backward-paragraph))))
-      (buffer-substring-no-properties (car range) (cdr range)))))
+    (polymuse--collect-units-to-limit limit
+                                      (or pt (point))
+                                      (polymuse--make-get-prev-wrapper #'backward-paragraph))))
 
 (defun polymuse--get-context-after-point-paragraphs (limit &optional buffer pt)
   "Paragraph-based context puller, grabbing paragraphs up to LIMIT characters.
 
 Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
   (with-current-buffer (or buffer (current-buffer))
-    (when-let* ((range
-                 (polymuse--collect-units-to-limit limit (or pt (point))
-                                                   (polymuse--make-get-next-wrapper #'forward-paragraph))))
-      (buffer-substring-no-properties (car range) (cdr range)))))
+    (polymuse--collect-units-to-limit limit
+                                      (or pt (point))
+                                      (polymuse--make-get-next-wrapper #'forward-paragraph))))
 
 (defun polymuse--get-context-before-point-sexps (limit &optional buffer pt)
   "Paragraph-based context puller, grabbing paragraphs up to LIMIT characters.
 
 Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
   (with-current-buffer (or buffer (current-buffer))
-    (when-let* ((range
-                 (polymuse--collect-units-to-limit limit (or pt (point))
-                                                   (polymuse--make-get-prev-wrapper #'backward-sexp))))
-      (buffer-substring-no-properties (car range) (cdr range)))))
+    (polymuse--collect-units-to-limit limit
+                                      (or pt (point))
+                                      (polymuse--make-get-prev-wrapper #'backward-sexp))))
 
 (defun polymuse--get-context-after-point-sexps (limit &optional buffer pt)
   "Paragraph-based context puller, grabbing paragraphs up to LIMIT characters.
 
 Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
   (with-current-buffer (or buffer (current-buffer))
-    (when-let* ((range
-                 (polymuse--collect-units-to-limit limit (or pt (point))
-                                                   (polymuse--make-get-next-wrapper #'forward-sexp))))
-      (buffer-substring-no-properties (car range) (cdr range)))))
+    (polymuse--collect-units-to-limit limit
+                                      (or pt (point))
+                                      (polymuse--make-get-next-wrapper #'forward-sexp))))
 
-(print (polymuse--get-context-before-point-paragraphs 50))
+(defun polymuse--get-unit-wrapper (go-back go-forward &optional buffer)
+  "Pull the range of the current unit.
 
-(defun polymuse--handle-llm-response (src review response)
-  ())
+GO-BACK is a function to go to the start of the current unit.
+GO-FORWARD is a function to go to the end of the current unit.
+If BUFFER is specified, the unit will be pulled from the point in that buffer."
+  (with-current-buffer (or buffer (current-buffer))
+    (let ((start) (end))
+      (save-excursion
+        (funcall go-back)
+        (setq start (point))
+        (funcall go-forward)
+        (setq end (point))
+        (cons start end)))))
 
-(defun polymuse--run-review (source-buffer review)
-  "Submit a review request for SOURCE-BUFFER to the associated LLM according to the instructions in REVIEW."
-  (let ((backend (or (polymuse-review-state-backend review)
-                     polymuse-default-backend)))
+(defun polymuse--get-unit-sexp (&optional buffer)
+  "Return the range of the current code block, from BUFFER or `(current-buffer)'."
+  (polymuse--get-unit-wrapper #'beginning-of-defun #'end-of-defun buffer))
+
+(defun polymuse--get-unit-paragraph (&optional buffer)
+  "Return the range of the current paragraph, from BUFFER or `(current-buffer)'."
+  (polymuse--get-unit-wrapper #'backward-paragraph #'forward-paragraph buffer))
+
+(defun polymuse--handle-llm-response (review response)
+  "On LLM response, display RESPONSE in output buffer, and update REVIEW state."
+  (condition-case err
+      (when (and response
+                 (stringp response)
+                 (> (length response) 0))
+        (polymuse--display-review review response))
+    (error (message "Polymuse: error handling response for review %s: %S"
+                    (polymuse-review-state-id review) err))))
+
+(defun polymuse--run-review (src-buffer review)
+  "Submit review request for SRC-BUFFER to LLM per config in REVIEW."
+  (let ((backend (polymuse-review-state-backend review)))
     (unless backend
-      (error "Polymuse: no backend configured, skipping review")
-      (cl-return-from polymuse--run-review))
-    (with-current-buffer source-buffer
-      (let ((prompt (polymuse--compose-prompt)))
-        (polymuse-request-review backend
-                                 prompt
-                                 :system   polymuse-system-prompt
-                                 :callback (lambda (response info)
-                                             (polymuse--handle-llm-response source-buffer review response)))))))
+      (error "Polymuse: no backend configured, skipping review"))
+    (with-current-buffer src-buffer
+      (let ((old-hash (polymuse-review-state-last-hash review))
+            (new-hash (polymuse--buffer-hash)))
+        (if (and old-hash (string= old-hash new-hash))
+            nil ;; No need to run review: buffer hasn't changed
+          (let ((prompt (polymuse--compose-prompt review)))
+            (setf (polymuse-review-state-last-run-time review) (float-time))
+            (setf (polymuse-review-state-last-hash review) new-hash)
+            (polymuse-request-review backend
+                                     prompt
+                                     :system   polymuse-system-prompt
+                                     :callback (lambda (response _)
+                                                 (polymuse--handle-llm-response review response)))))))))
 
 (defun polymuse--global-idle-tick ()
   "Check all muse-enabled buffers and run due reviews."
@@ -508,7 +608,7 @@ Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
     (with-current-buffer buf
       (when polymuse-mode
         (dolist (review polymuse--reviews)
-          (let* ((interval (polymuse-review-state-internal review))
+          (let* ((interval (polymuse-review-state-interval review))
                  (last-run (or (polymuse-review-state-last-run-time review) 0))
                  (now (float-time)))
             (when (> (- now last-run) interval)
@@ -526,16 +626,23 @@ Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
       (buffer-substring-no-properties (car region) (cdr region))
     ""))
 
-(defun polymuse--compose-prompt ()
-  "Generate the full prompt for use with the PolyMuse backend LLM."
+(defun polymuse--grab-buffer-tail (buffer n)
+  "Return the last N lines from BUFFER as a string."
+  (with-current-buffer buffer
+    (goto-char (point-max))
+    (forward-line (- n))
+    (buffer-substring-no-properties (point) (point-max))))
+
+(defun polymuse--compose-prompt (review)
+  "Generate the full prompt for REVIEW, for use with the PolyMuse backend LLM."
   (let* ((mode-prompt   (or (polymuse-get-mode-prompt) ""))
-         (local-prompt  (or polymuse-local-prompt ""))
+         (local-prompt  (or (polymuse-review-state-instructions review) ""))
          ;; total char budget for this prompt
          (max-chars     (or polymuse--max-prompt-characters
                             most-positive-fixnum))
-         (tools-prompt (mapcar (lambda (tool) `(("tool-name"             . ,(symbol-name (polymuse-tool-function tool)))
-                                                ("tool-args"        . ,(mapcar #'symbol-name (polymuse-tool-args tool)))
-                                                ("tool-description" . ,(polymuse-tool-description tool))))
+         (tools-prompt (mapcar (lambda (tool) `(("tool-name"        . ,(car tool))
+                                                ("tool-args"        . ,(mapcar #'symbol-name (polymuse-tool-arguments (cdr tool))))
+                                                ("tool-description" . ,(polymuse-tool-description (cdr tool)))))
                                polymuse-local-tools))
 
          ;; Rough overhead for non-context text + headings/newlines.
@@ -543,9 +650,7 @@ Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
                            (length local-prompt)
                            80))
 
-         ;; Ask the unit grabber to stay within the remaining budget.
-         (current-unit  (funcall polymuse--unit-grabber
-                                 (max 0 (- max-chars prompt-size))))
+         (current-unit  (funcall polymuse--unit-grabber))
          (current-len   (polymuse--region-length current-unit))
 
          ;; Remaining budget for context.
@@ -565,72 +670,108 @@ Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
          (backward-context (and (> backward-budget 0)
                                 (funcall polymuse--prev-context-grabber
                                          backward-budget
-                                         (and current-unit (car current-unit))))))
-    `(("review-request"
-       . (("mode-prompt"       . ,mode-prompt)
-          ("buffer-prompt"     . ,local-prompt)
+                                         nil
+                                         (and current-unit (car current-unit)))))
+         (out-buffer            (polymuse-review-state-output-buffer review))
+         (existing-review-lines (polymuse-review-state-review-context review))
+         (existing-review       (polymuse--grab-buffer-tail out-buffer existing-review-lines)))
+    `((review-request
+       . ((mode-prompt       . ,mode-prompt)
+          (buffer-prompt     . ,local-prompt)
           ,@(when tools-prompt
-              ("tools"             . ,(if tools-prompt
-                                          `(("instructions"
-                                             . ,(string-join '("You may call a tool for more information instead of replying directly."
-                                                               "If you want more information, reply ONLY with a JSON request of the form:"
-                                                               "`{"
-                                                               "\"action\":\"tool-call\","
-                                                               "\"tool\":\"<tool-name>\","
-                                                               "\"arguments\": {"
-                                                               "\"arg0\": \"<value>\","
-                                                               "\"arg1\": \"<value>\""
-                                                               "}"
-                                                               "}`"
-                                                               "The result of the tool call will be added to the request and"
-                                                               "the resulting request will be passed back to you.")
-                                                             " "))
-                                            ("tool-list" . ,tools-prompt)))))))
-      ("environment"
-       . (("editor"     . "emacs")
-          ("major_mode" . ,major-mode)))
-      ("context"
-       . (("backward-context" . ,(polymuse--region-string backward-context))
-          ("forward-context"  . ,(polymuse--region-string forward-context))))
-      ("current"
-       . (("focus-region" . ,(polymuse--region-string current-unit))))
-      ("task"
-       . (("focus" . "Prioritize the text in the `current.focus-region' field.")
-          ("details" . ,(string-join '("Analyze and provide feedback based primarily on"
-                                       "the current editing focus-region, using the earlier"
-                                       "and later context for reference.")
-                                     " "))
-          ("instructions" . ,(or polymuse-final-instructions "")))))
-    :pretty t))
+              (list `(tools . ((instructions
+                                . ,(string-join '("You may call a tool for more information instead of replying directly."
+                                                  "If you want more information, reply ONLY with a JSON request of the form:"
+                                                  "`{"
+                                                  "\"action\":\"tool-call\","
+                                                  "\"tool\":\"<tool-name>\","
+                                                  "\"arguments\": {"
+                                                  "\"arg0\": \"<value>\","
+                                                  "\"arg1\": \"<value>\""
+                                                  "}"
+                                                  "}`"
+                                                  "The result of the tool call will be added to the request and"
+                                                  "the resulting request will be passed back to you.")
+                                                " "))
+                               (tool-list . ,tools-prompt)))))))
+      (environment
+       . ((editor     . "emacs")
+          (major_mode . ,(symbol-name major-mode))))
+      (context
+       . ((backward-context . ,(polymuse--region-string backward-context))
+          (forward-context  . ,(polymuse--region-string forward-context))
+          (existing-review  . ,existing-review)))
+      (current
+       . ((focus-region . ,(polymuse--region-string current-unit))))
+      (task
+       . ((focus   . "Prioritize the text in the `current.focus-region' field.")
+          (details . ,(string-join '("Analyze and provide feedback based primarily on"
+                                     "the current editing focus-region, using the earlier"
+                                     "and later context for reference.")
+                                   " "))
+          ,@(when polymuse-final-instructions
+              (list `(instructions . ,polymuse-final-instructions))))))))
 
-(defun polymuse-edit-prompt ()
-  "Edit the buffer-specific prompt for polymuse."
+(defun polymuse-edit-instructions ()
+  "Edit the buffer-specific instructions for Polymuse reviewer.
+
+If called from a buffer under review, look at `polymuse-reviews':
+ - If there's exactly one review, edit that one.
+ - If there are more than one, prompt the user to select which to edit."
   (interactive)
-  (let ((buf (get-buffer-create "*Polymuse Buffer Prompt*"))
-        (current (or polymuse-local-prompt
-                     (polymuse--compose-prompt))))
+  (cond
+   ;; case 1: we're in a reviewer buffer
+   ((and (boundp 'polymuse--buffer-review-state)
+         polymuse--buffer-review-state)
+    (polymuse--edit-review-instructions polymuse--buffer-review-state))
+   ;; case 2: we're in the buffer under review, with a list of reviewers
+   ((and (boundp 'polymuse--reviews)
+         polymuse--reviews)
+    (let ((reviews polymuse--reviews))
+      (pcase (length reviews)
+        (0 (user-error "No reviewers configured for this buffer"))
+        (1 (polymuse--edit-review-instructions (car reviews)))
+        (_ (let* ((choices   (mapcar (lambda (state)
+                                       (cons (polymuse-review-state-id state) state))
+                                     reviews))
+                  (choice-id (completing-read "Edit instructions for reviewer: "
+                                              (mapcar #'car choices) nil t))
+                  (state     (cdr (assoc choice-id choices))))
+             (unless state
+               (user-error "No reviewer found for id %s" choice-id))
+             (polymuse--edit-review-instructions state))))))
+   (t (user-error "No polymuse review state found for this buffer"))))
+
+(defvar-local polymuse--buffer-review-state nil
+  "The `polymuse-review-state' struct associated with a review buffer.")
+
+(defun polymuse--edit-review-instructions (review)
+  "Given a `polymuse-review-state' struct in REVIEW, let the user modify and save the review instructions."
+  (let ((buf (get-buffer-create (format "*polymuse prompt:%s*"
+                                        (polymuse-review-state-id review))))
+        (instructions (or (polymuse-review-state-instructions review) "")))
     (with-current-buffer buf
       (erase-buffer)
-      (insert current)
+      (insert instructions)
       (org-mode)
       (goto-char (point-min))
-      (setq-local polymuse--source-buffer (current-buffer)))
+      (setq-local polymuse--buffer-review-state review))
     (display-buffer buf)))
 
-(defun polymuse-save-prompt ()
-  "Save the edited prompt from *Polymuse Buffer Prompt* to this buffer's local prompt variable."
+(defun polymuse-save-instructions ()
+  "Save an edited reviewer prompt to the associated `polymuse-review-state' struct."
   (interactive)
   (unless (eq major-mode 'org-mode)
-    (user-error "This command expects the *Polymuse Buffer Prompt* buffer"))
-  (let ((text (buffer-substring-no-properties (point-min) (point-max)))
-        (src  (buffer-local-value 'polymuse--source-buffer (current-buffer))))
-    (with-current-buffer src
-      (setq polymuse-local-prompt text))
-    (message "polymuse local prompt updated.")))
+    (user-error "This command expects a polymuse prompt buffer"))
+  (let* ((state        (buffer-local-value 'polymuse--buffer-review-state (current-buffer)))
+         (reviewer-id  (polymuse-review-state-id state))
+         (instructions (buffer-substring-no-properties (point-min) (point-max))))
+    (setf (polymuse-review-state-instructions state) instructions)
+    (message "Local prompt for reviewer %s updated." reviewer-id)))
 
 (define-derived-mode polymuse-suggestions-mode special-mode "Polymuse"
   "Mode for displaying AI suggestions from Polymuse."
-  (setq buffer-read-only t))
+  (org-mode))
 
 (defcustom polymuse-default-interval 60
   "Default idle time (in seconds) between Polymuse reviews."
@@ -641,7 +782,14 @@ Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
   (unless polymuse--idle-timer
     (setq polymuse--idle-timer
           (run-with-idle-timer polymuse-idle-seconds t
-                               #'polymuse--global-idle-tick))))
+                               #'polymuse--global-idle-tick)))
+  (if (polymuse--code-mode-p)
+      (setq polymuse--unit-grabber #'polymuse--get-unit-sexp
+            polymuse--prev-context-grabber #'polymuse--get-context-before-point-sexps
+            polymuse--next-context-grabber #'polymuse--get-context-after-point-sexps)
+    (setq polymuse--unit-grabber #'polymuse--get-unit-paragraph
+          polymuse--prev-context-grabber #'polymuse--get-context-before-point-paragraphs
+          polymuse--next-context-grabber #'polymuse--get-context-after-point-paragraphs)))
 
 (defun polymuse--disable ()
   "Disable the Polymuse LLM live review mode."
@@ -662,31 +810,94 @@ Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
         (error "Output buffer %s for review %s is not live"
                outbuf (polymuse-review-state-id review))
       (with-current-buffer outbuf
-        (polymuse-suggestions-mode 1)
         (let ((inhibit-read-only t))
-          (truncate-buffer-to-length outbuf (polymuse-review-state-buffer-size-limit review))
-          (typewrite-enqueue-job response buf))))))
+          (polymuse-suggestions-mode)
+          (polymuse--truncate-buffer-to-length
+           (current-buffer)
+           (polymuse-review-state-buffer-size-limit review))
+          (typewrite-enqueue-job response outbuf))))))
 
-(cl-defun polymuse-add-reviewer (&key id
-                                      backend
-                                      (interval polymuse-default-interval)
-                                      (buffer-size-limit polymuse-default-buffer-size-limit)
-                                      out-buffer)
+(defun polymuse--kill-reviewer (buffer review)
+  "Remove a REVIEW from BUFFER, and delete its output buffer."
+  (with-current-buffer buffer
+    (unless (and (boundp 'polymuse--reviews)
+                 polymuse--reviews)
+      (user-error "No active Polymuse reviewers configured for this buffer"))
+    (kill-buffer (polymuse-review-state-output-buffer review))
+    (setq polymuse--reviews
+          (cl-remove (polymuse-review-state-id review)
+                     polymuse--reviews
+                     :key  #'polymuse-review-state-id
+                     :test #'string=))))
+
+(defun polymuse-kill-all-reviewers (&optional buffer)
+  "Remove all reviewers from BUFFER, and delete their output buffers."
+  (interactive)
+  (with-current-buffer (or buffer (current-buffer))
+    (unless (and (boundp 'polymuse--reviews)
+                 polymuse--reviews)
+      (user-error "No active Polymuse reviewers configured for this buffer"))
+    (dolist (review polymuse--reviews)
+      (kill-buffer (polymuse-review-state-output-buffer review)))
+    (setq polymuse--reviews '())))
+
+(defun polymuse-kill-reviewer (&optional buffer)
+  "Select and kill a reviewer associated with BUFFER."
+  ;; TODO: if there's only one, just kill that one
+  (interactive)
+  (with-current-buffer (or buffer (current-buffer))
+    (unless (or (and (boundp 'polymuse--reviews)
+                     polymuse--reviews)
+                (and (boundp 'polymuse--buffer-review-state)
+                     polymuse--buffer-review-state))
+      (user-error "No active Polymuse reviewers configured for this buffer"))
+    (if (and (boundp 'polymuse--buffer-review-state)
+             polymuse--buffer-review-state)
+        ;; This IS a review buffer
+        (let* ((review polymuse--buffer-review-state)
+               (parent (polymuse-review-state-source-buffer review)))
+          (switch-to-buffer parent)
+          (polymuse--kill-reviewer parent review)
+          (message "Killed polymuse reviewer: %s"
+                   (polymuse-review-state-id review)))
+      (let* ((buf (or buffer (current-buffer)))
+             (reviews (buffer-local-value 'polymuse--reviews buf))
+             (choices (mapcar (lambda (review) (cons (polymuse-review-state-id review) review))
+                              reviews))
+             (id      (completing-read "Kill reviewer: " (mapcar #'car choices) nil t))
+             (target  (cdr (assoc id choices))))
+        (unless target (user-error "No reviewer found for id %S" id))
+        (polymuse--kill-reviewer buf target)
+        (message "Killed polymuse reviewer: %s" id)))))
+
+(cl-defun polymuse-add-reviewer
+    (&key id
+          backend
+          instructions
+          (interval polymuse-default-interval)
+          (buffer-size-limit polymuse-default-buffer-size-limit)
+          (review-context polymuse-default-review-context-lines)
+          out-buffer)
   "Create a new Polymuse review buffer for the current buffer.
 
 ID is the identifier for this review, and will be generated if not provided.
 BACKEND is the backend (LLM) to which requests will be sent for review.
+INSTRUCTIONS are instructions specifically for this reviewer.
 INTERVAL is the time in seconds between review requests. A default will be used
   if none is provided.
 BUFFER-SIZE-LIMIT is the size limit of the review buffer. It will be truncated
   if it grows too large. A default will be used if none in provided.
 OUT-BUFFER is the buffer where reviews will be posted. A new buffer will be
-  created if none is provided."
+  created if none is provided.
+REVIEW-CONTEXT is the number of lines of earlier review to include in the
+  prompt."
   (interactive)
   (let* ((id (or id (format "polymuse-%s-%d" (buffer-name) (float-time))))
-         (backend (or backend (polymuse-default-backend)))
+         (backend (or backend (polymuse-ensure-backend)))
          (suggestions-buf (or out-buffer
-                              (generate-new-buffer (format "*polymuse:%s" id))))
+                              (generate-new-buffer (format "*polymuse:%s*" id))))
+         (local-instructions (or instructions
+                                 (read-string "Review instructions (empty for none): ")))
          (state (make-polymuse-review-state
                  :id                 id
                  :interval           interval
@@ -694,11 +905,21 @@ OUT-BUFFER is the buffer where reviews will be posted. A new buffer will be
                  :last-hash          nil
                  :buffer-size-limit  buffer-size-limit
                  :output-buffer      suggestions-buf
-                 :backend            backend)))
+                 :instructions       (unless (string-empty-p local-instructions)
+                                       local-instructions)
+                 :backend            backend
+                 :review-context     review-context
+                 :source-buffer      (current-buffer))))
     (push state polymuse--reviews)
     (polymuse--enable)
     (message "Polymuse review %s created with backend %s; suggestions in %s"
-             id backend (buffer-name suggestions-buf))
+             id (polymuse-backend-id backend) (buffer-name suggestions-buf))
+    (display-buffer suggestions-buf
+                    '((display-buffer-in-side-window)
+                      (side . right)
+                      (slot . 0)
+                      (window-width . 0.33)))
+    (polymuse--run-review (current-buffer) state)
     state))
 
 (provide 'polymuse)
