@@ -90,14 +90,14 @@ CONFIG is a plist which may contain:
                              (plist-get config :newline-before)
                            "\n\n"))
          (cps (or (plist-get config :cps) typewrite-default-cps))
-         (inhibit-read-only (if (plist-member config :inhibit-read-only)
-                                (plist-get config :inhibit-read-only)
-                              typewrite-default-inhibit-read-only))
+         (inhibit-read-only-setting (if (plist-member config :inhibit-read-only)
+                                        (plist-get config :inhibit-read-only)
+                                      typewrite-default-inhibit-read-only))
          marker)
     (unless (and (numberp cps) (> cps 0))
       (user-error "Typewrite: cps must be a positive number"))
     (with-current-buffer buf
-      (let ((inhibit-read-only inhibit-read-only))
+      (let ((inhibit-read-only inhibit-read-only-setting))
         ;; Move to end of buffer if requested (default)
         (when at-end
           (goto-char (point-max)))
@@ -117,7 +117,7 @@ CONFIG is a plist which may contain:
                 :budget 0.0
                 :last-time (float-time)
                 :follow (plist-get config :follow)
-                :inhibit-read-only inhibit-read-only
+                :inhibit-read-only inhibit-read-only-setting
                 :done-callback (plist-get config :done-callback))))
       (push job typewrite--jobs)
       (typewrite--ensure-timer)

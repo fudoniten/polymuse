@@ -120,9 +120,9 @@ When the buffer grows larger than this, the beginning will be truncated."
 (defun polymuse-create-ollama-executor (name host model &optional protocol)
   "Set up Polymuse Ollama backend NAME for HOST with MODEL over PROTOCOL."
   (gptel-make-ollama name
-                     :host     host
-                     :protocol (or protocol "https")
-                     :models   (list model)))
+    :host     host
+    :protocol (or protocol "https")
+    :models   (list model)))
 
 (defun polymuse-create-openai-executor (name model)
   "Set up Polymuse Ollama backend NAME for HOST with MODEL over PROTOCOL."
@@ -319,10 +319,10 @@ Signals `polymuse-json-error' if parsing fails or the field is missing."
          (handler  (lambda (resp info)
                      (let ((formatted (polymuse--format-response resp)))
                        (when polymuse--debug
-                          (with-current-buffer (get-buffer-create polymuse-debug-buffer)
-                            (insert "\n\nRESPONSE:\n\n")
-                            (insert formatted)
-                            (insert "\n\nEND RESPONSE\n\n")))
+                         (with-current-buffer (get-buffer-create polymuse-debug-buffer)
+                           (insert "\n\nRESPONSE:\n\n")
+                           (insert formatted)
+                           (insert "\n\nEND RESPONSE\n\n")))
                        (when callback (funcall callback formatted info))))))
     (when polymuse--debug
       (with-current-buffer (get-buffer-create polymuse-debug-buffer)
