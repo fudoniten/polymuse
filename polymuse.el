@@ -77,8 +77,13 @@ When the buffer grows larger than this, the beginning will be truncated."
 (defvar polymuse--idle-timer nil
   "Driver timer for active Polymuse reviewers.")
 
-(defvar polymuse--debug nil
-  "Enable Polymuse debug mode.")
+(defcustom polymuse--debug nil
+  "Enable Polymuse debug mode."
+  :type 'boolean)
+
+(defcustom polymuse-debug-buffer "*polymuse-debug*"
+  "Buffer used to capture Polymuse debug input and output."
+  :type 'string)
 
 ;;;;
 ;; BACKENDS
@@ -169,13 +174,16 @@ Currently defaults to Ollama and prompts for host + model."
                         nil t nil nil "Ollama")))
     (pcase backend-type
       ("Ollama" (setq polymuse-default-backend-id (polymuse--setup-ollama-backend)))
-      ("OpenAI" (setq polymuse-default-backend-id (polymuse--setup-openai-backend))))))
+      ("OpenAI" (setq polymuse-default-backend-id (polymuse--setup-openai-backend)))
+      (_ (user-error "Unsupported backend type: %s" backend-type)))))
 
 (defun polymuse-define-default-backend ()
   "Interactively define the default Polymuse backend."
   (interactive)
   (let ((backend (polymuse--interactive-setup-default-backend)))
-    (message "Set default Polymuse backend to %s" (polymuse-backend-id backend))))
+    (if backend
+        (message "Set default Polymuse backend to %s" (polymuse-backend-id backend))
+      (user-error "No backend configured"))))
 
 (defun polymuse--delete-backend (backend-id)
   "Remove BACKEND-ID from Polymuse backends."
@@ -211,8 +219,9 @@ HOST should be like \"localhost:11434\"."
                             :null-object  nil
                             :false-object nil))
                      (models (alist-get 'models json)))
-                (mapcar (lambda (m) (alist-get 'name m))
-                        models))))
+                (delq nil
+                      (mapcar (lambda (m) (alist-get 'name m))
+                              models)))))
         (kill-buffer buf)))))
 
 (defun polymuse--format-json (json-string)
@@ -310,13 +319,13 @@ Signals `polymuse-json-error' if parsing fails or the field is missing."
          (handler  (lambda (resp info)
                      (let ((formatted (polymuse--format-response resp)))
                        (when polymuse--debug
-                         (with-current-buffer (get-buffer-create "*polymuse-debug*")
-                           (insert "\n\nRESPONSE:\n\n")
-                           (insert formatted)
-                           (insert "\n\nEND RESPONSE\n\n")))
+                          (with-current-buffer (get-buffer-create polymuse-debug-buffer)
+                            (insert "\n\nRESPONSE:\n\n")
+                            (insert formatted)
+                            (insert "\n\nEND RESPONSE\n\n")))
                        (when callback (funcall callback formatted info))))))
     (when polymuse--debug
-      (with-current-buffer (get-buffer-create "*polymuse-debug*")
+      (with-current-buffer (get-buffer-create polymuse-debug-buffer)
         (insert "\n\nREQUEST:\n\n")
         (insert (polymuse--format-json (json-serialize request)))
         (insert "\n\nEND REQUEST\n\n")))
@@ -342,7 +351,8 @@ necessary."
       (when polymuse-default-backend-id
         (polymuse-find-backend polymuse-default-backend-id))
       (let ((id (polymuse--interactive-setup-default-backend)))
-        (polymuse-find-backend id))))
+        (when id
+          (polymuse-find-backend id)))))
 
 (defun polymuse--truncate-buffer-to-length (buffer max-chars)
   "Truncate BUFFER from the top so it is at most MAX-CHARS characters long.
@@ -369,17 +379,12 @@ recenter those windows."
           (let* ((size   (buffer-size))
                  (excess (- size max-chars)))
             (when (> excess 0)
-              ;; Where are we allowed to delete without changing
-              ;; what’s currently on-screen?
-              (let* ((size   (buffer-size))
-                     (excess (- size max-chars)))
-                (when (> excess 0)
-                  (let ((delete-end (+ (point-min) excess)))
-                    (goto-char delete-end)
-                    (end-of-line)
-                    (setq delete-end (min (point-max) (point)))
-                    (when (> delete-end (point-min))
-                      (delete-region (point-min) delete-end))))))))))))
+              (let ((delete-end (+ (point-min) excess)))
+                (goto-char delete-end)
+                (end-of-line)
+                (setq delete-end (min (point-max) (point)))
+                (when (> delete-end (point-min))
+                  (delete-region (point-min) delete-end))))))))))
 
 (defcustom polymuse-model nil
   "Model to use with polymuse."
