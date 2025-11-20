@@ -115,9 +115,9 @@ When the buffer grows larger than this, the beginning will be truncated."
 (defun polymuse-create-ollama-executor (name host model &optional protocol)
   "Set up Polymuse Ollama backend NAME for HOST with MODEL over PROTOCOL."
   (gptel-make-ollama name
-    :host     host
-    :protocol (or protocol "https")
-    :models   (list model)))
+                     :host     host
+                     :protocol (or protocol "https")
+                     :models   (list model)))
 
 (defun polymuse-create-openai-executor (name model)
   "Set up Polymuse Ollama backend NAME for HOST with MODEL over PROTOCOL."

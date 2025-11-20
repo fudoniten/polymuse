@@ -21,6 +21,15 @@
 
 (require 'cl-lib)
 
+(defgroup typewrite nil
+  "Lightweight typewriter effect for Emacs buffers."
+  :group 'applications)
+
+(defcustom typewrite-default-inhibit-read-only t
+  "Whether `typewrite' should ignore read-only protections by default."
+  :type 'boolean
+  :group 'typewrite)
+
 (defvar typewrite--jobs nil
   "List of active typewriter jobs.")
 
@@ -36,6 +45,7 @@
   last-time
   budget
   follow
+  inhibit-read-only
   done-callback)
 
 (defun typewrite--ensure-timer (&optional interval)
@@ -52,7 +62,8 @@ CONFIG is a plist which may contain:
   :follow         non-nil => scroll windows showing the buffer
   :done-callback  function called with the job when finished
   :at-end         default t; when nil, use current point instead of end
-  :newline-before default \"\n\n\"; when nil, don't insert a newline first."
+  :newline-before default "\n\n"; when nil, don't insert a newline first.
+  :inhibit-read-only non-nil => bind `inhibit-read-only' during writes."
   (let* ((buf (or (get-buffer buffer)
                   (error "Buffer %S does not exist" buffer)))
          ;; Defaults: at-end = t, newline-before = t, unless explicitly set
@@ -62,18 +73,22 @@ CONFIG is a plist which may contain:
          (newline-before (if (plist-member config :newline-before)
                              (plist-get config :newline-before)
                            "\n\n"))
+         (inhibit-read-only (if (plist-member config :inhibit-read-only)
+                                (plist-get config :inhibit-read-only)
+                              typewrite-default-inhibit-read-only))
          marker)
     (with-current-buffer buf
-      ;; Move to end of buffer if requested (default)
-      (when at-end
-        (goto-char (point-max)))
-      ;; Optionally insert a newline before we start typing (default)
-      (when newline-before
-        ;; avoid double-blank-line if already at BOL
-        (unless (bolp)
-          (insert newline-before)))
-      ;; Start marker at current point, insertion-type so it follows inserts
-      (setq marker (copy-marker (point) t)))
+      (let ((inhibit-read-only inhibit-read-only))
+        ;; Move to end of buffer if requested (default)
+        (when at-end
+          (goto-char (point-max)))
+        ;; Optionally insert a newline before we start typing (default)
+        (when newline-before
+          ;; avoid double-blank-line if already at BOL
+          (unless (bolp)
+            (insert newline-before)))
+        ;; Start marker at current point, insertion-type so it follows inserts
+        (setq marker (copy-marker (point) t))))
     (let ((job (make-typewrite-job
                 :buffer buf
                 :marker marker
@@ -83,6 +98,7 @@ CONFIG is a plist which may contain:
                 :budget 0.0
                 :last-time (float-time)
                 :follow (plist-get config :follow)
+                :inhibit-read-only inhibit-read-only
                 :done-callback (plist-get config :done-callback))))
       (push job typewrite--jobs)
       (typewrite--ensure-timer)
@@ -124,7 +140,7 @@ If no jobs remain after this tick, cancel `typewrite--timer' and set it to nil."
                           (follow (typewrite-job-follow job))
                           (new-idx idx))
                       (save-excursion
-                        (let ((inhibit-read-only t))
+                        (let ((inhibit-read-only (typewrite-job-inhibit-read-only job)))
                           (goto-char marker)
                           (dotimes (_ to-write)
                             (when (< new-idx len)
