@@ -76,7 +76,7 @@ CONFIG is a plist which may contain:
   :follow         non-nil => scroll windows showing the buffer
   :done-callback  function called with the job when finished
   :at-end         default t; when nil, use current point instead of end
-  :newline-before default "\n\n"; when nil, don't insert a newline first.
+  :newline-before default \n\n; when nil, don't insert a newline first.
   :inhibit-read-only non-nil => bind `inhibit-read-only' during writes."
   (unless (stringp str)
     (user-error "typewrite: STR must be a string"))
@@ -95,7 +95,7 @@ CONFIG is a plist which may contain:
                               typewrite-default-inhibit-read-only))
          marker)
     (unless (and (numberp cps) (> cps 0))
-      (user-error "typewrite: cps must be a positive number"))
+      (user-error "Typewrite: cps must be a positive number"))
     (with-current-buffer buf
       (let ((inhibit-read-only inhibit-read-only))
         ;; Move to end of buffer if requested (default)
