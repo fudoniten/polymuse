@@ -115,9 +115,9 @@ When the buffer grows larger than this, the beginning will be truncated."
 (defun polymuse-create-ollama-executor (name host model &optional protocol)
   "Set up Polymuse Ollama backend NAME for HOST with MODEL over PROTOCOL."
   (gptel-make-ollama name
-    :host     host
-    :protocol (or protocol "https")
-    :models   (list model)))
+                     :host     host
+                     :protocol (or protocol "https")
+                     :models   (list model)))
 
 (defun polymuse-create-openai-executor (name model)
   "Set up Polymuse Ollama backend NAME for HOST with MODEL over PROTOCOL."
@@ -771,9 +771,7 @@ If called from a buffer under review, look at `polymuse-reviews':
 
 (define-derived-mode polymuse-suggestions-mode special-mode "Polymuse"
   "Mode for displaying AI suggestions from Polymuse."
-  (org-mode)
-  (setq-local buffer-read-only nil)
-  (setq-local inhibit-read-only t))
+  (org-mode))
 
 (defcustom polymuse-default-interval 60
   "Default idle time (in seconds) between Polymuse reviews."
