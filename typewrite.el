@@ -21,6 +21,20 @@
 
 (require 'cl-lib)
 
+(defgroup typewrite nil
+  "Simulate incremental typing into buffers."
+  :group 'applications)
+
+(defcustom typewrite-default-cps 30.0
+  "Default characters-per-second rate for newly enqueued jobs."
+  :type 'number
+  :group 'typewrite)
+
+(defcustom typewrite-tick-interval 0.05
+  "Default timer interval used to drive active jobs."
+  :type 'number
+  :group 'typewrite)
+
 (defvar typewrite--jobs nil
   "List of active typewriter jobs.")
 
@@ -40,9 +54,13 @@
 
 (defun typewrite--ensure-timer (&optional interval)
   "Ensure the driver timer is running, at INTERVAL seconds (or default)."
-  (unless typewrite--timer
-    (setq typewrite--timer
-          (run-at-time 0 (or interval 0.05) #'typewrite--tick))))
+  (let ((seconds (or interval typewrite-tick-interval)))
+    (setq seconds (if (and (numberp seconds) (> seconds 0))
+                      seconds
+                    typewrite-tick-interval))
+    (unless typewrite--timer
+      (setq typewrite--timer
+            (run-at-time 0 seconds #'typewrite--tick)))))
 
 (defun typewrite-enqueue-job (str buffer &rest config)
   "Enqueue a new typewriter job for STR into BUFFER, with CONFIG.
@@ -53,8 +71,10 @@ CONFIG is a plist which may contain:
   :done-callback  function called with the job when finished
   :at-end         default t; when nil, use current point instead of end
   :newline-before default \"\n\n\"; when nil, don't insert a newline first."
+  (unless (stringp str)
+    (user-error "typewrite: STR must be a string"))
   (let* ((buf (or (get-buffer buffer)
-                  (error "Buffer %S does not exist" buffer)))
+                  (user-error "Buffer %S does not exist" buffer)))
          ;; Defaults: at-end = t, newline-before = t, unless explicitly set
          (at-end (if (plist-member config :at-end)
                      (plist-get config :at-end)
@@ -62,7 +82,10 @@ CONFIG is a plist which may contain:
          (newline-before (if (plist-member config :newline-before)
                              (plist-get config :newline-before)
                            "\n\n"))
+         (cps (or (plist-get config :cps) typewrite-default-cps))
          marker)
+    (unless (and (numberp cps) (> cps 0))
+      (user-error "typewrite: cps must be a positive number"))
     (with-current-buffer buf
       ;; Move to end of buffer if requested (default)
       (when at-end
@@ -79,7 +102,7 @@ CONFIG is a plist which may contain:
                 :marker marker
                 :string str
                 :index  0
-                :cps    (or (plist-get config :cps) 30.0)
+                :cps    cps
                 :budget 0.0
                 :last-time (float-time)
                 :follow (plist-get config :follow)
