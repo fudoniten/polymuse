@@ -771,7 +771,9 @@ If called from a buffer under review, look at `polymuse-reviews':
 
 (define-derived-mode polymuse-suggestions-mode special-mode "Polymuse"
   "Mode for displaying AI suggestions from Polymuse."
-  (org-mode))
+  (org-mode)
+  (setq-local buffer-read-only nil)
+  (setq-local inhibit-read-only t))
 
 (defcustom polymuse-default-interval 60
   "Default idle time (in seconds) between Polymuse reviews."
