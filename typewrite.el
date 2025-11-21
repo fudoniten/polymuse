@@ -135,46 +135,8 @@ If no jobs remain after this tick, cancel `typewrite--timer' and set it to nil."
   (let* ((now (float-time))
          (alive-jobs nil))
     (dolist (job typewrite--jobs)
-      (let ((buf (typewrite-job-buffer job)))
-        (if (not (buffer-live-p buf))
-            ;; buffer died, drop the job silently
-            nil
-          (with-current-buffer buf
-            (let* ((str (typewrite-job-string job))
-                   (len (length str))
-                   (idx (or (typewrite-job-index job) 0)))
-              (if (>= idx len)
-                  ;; Already finished; just fire callback once and drop
-                  (when-let* ((cb (typewrite-job-done-callback job)))
-                    (funcall cb job))
-                (let* ((cps       (or (typewrite-job-cps job) 20.0))
-                       (last-time (or (typewrite-job-last-time job) now))
-                       (budget    (+ (or (typewrite-job-budget job) 0.0)
-                                     (* cps (- now last-time))))
-                       (to-write  (floor budget)))
-                  (setf (typewrite-job-budget job) (- budget to-write)
-                        (typewrite-job-last-time job) now)
-                  (when (> to-write 0)
-                    (let ((marker (typewrite-job-marker job))
-                          (follow (typewrite-job-follow job))
-                          (new-idx idx))
-                      (save-excursion
-                        (let ((inhibit-read-only (typewrite-job-inhibit-read-only job)))
-                          (goto-char marker)
-                          (dotimes (_ to-write)
-                            (when (< new-idx len)
-                              (insert (aref str new-idx))
-                              (setq new-idx (1+ new-idx)))))
-                        ;; marker auto-advances as we insert
-                        )
-                      (setf (typewrite-job-index job) new-idx)
-                      (when (and follow (> new-idx idx))
-                        (dolist (win (get-buffer-window-list buf nil t))
-                          (set-window-point win (marker-position marker))))))
-                  ;; Keep job alive if it still has work,
-                  ;; regardless of whether we wrote this tick.
-                  (when (< (typewrite-job-index job) len)
-                    (push job alive-jobs)))))))))
+      (when (typewrite--process-job job now)
+        (push job alive-jobs)))
     ;; update global job list
     (setq typewrite--jobs (nreverse alive-jobs))
     ;; if no jobs remain, stop the timer
@@ -182,6 +144,76 @@ If no jobs remain after this tick, cancel `typewrite--timer' and set it to nil."
                typewrite--timer)
       (cancel-timer typewrite--timer)
       (setq typewrite--timer nil))))
+
+(defun typewrite--process-job (job now)
+  "Advance JOB at time NOW.
+
+Return JOB when it should remain active, or nil to drop it."
+  (let ((buf (typewrite-job-buffer job)))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (let* ((str (typewrite-job-string job))
+               (len (length str)))
+          (cond
+           ((typewrite--job-finished-p job len)
+            (typewrite--run-done-callback job)
+            nil)
+           (t
+            (typewrite--advance-job job len now)
+            (if (typewrite--job-finished-p job len)
+                (progn
+                  (typewrite--run-done-callback job)
+                  nil)
+              job))))))))
+
+(defun typewrite--job-finished-p (job len)
+  "Return non-nil when JOB has already inserted LEN characters."
+  (>= (or (typewrite-job-index job) 0) len))
+
+(defun typewrite--run-done-callback (job)
+  "Invoke JOB's done callback, if any."
+  (when-let* ((cb (typewrite-job-done-callback job)))
+    (funcall cb job)))
+
+(defun typewrite--advance-job (job len now)
+  "Advance JOB towards LEN characters at timestamp NOW."
+  (let* ((to-write (typewrite--calculate-write-budget job now)))
+    (when (> to-write 0)
+      (typewrite--insert-chunk job len to-write))))
+
+(defun typewrite--calculate-write-budget (job now)
+  "Update JOB's budget using NOW and return number of chars to write."
+  (let* ((cps       (or (typewrite-job-cps job) 20.0))
+         (last-time (or (typewrite-job-last-time job) now))
+         (budget    (+ (or (typewrite-job-budget job) 0.0)
+                       (* cps (- now last-time))))
+         (to-write  (floor budget)))
+    (setf (typewrite-job-budget job) (- budget to-write)
+          (typewrite-job-last-time job) now)
+    to-write))
+
+(defun typewrite--insert-chunk (job len to-write)
+  "Insert up to TO-WRITE characters for JOB into its buffer of length LEN."
+  (let* ((marker (typewrite-job-marker job))
+         (follow (typewrite-job-follow job))
+         (str (typewrite-job-string job))
+         (old-idx (or (typewrite-job-index job) 0))
+         (new-idx old-idx))
+    (save-excursion
+      (let ((inhibit-read-only (typewrite-job-inhibit-read-only job)))
+        (goto-char marker)
+        (dotimes (_ to-write)
+          (when (< new-idx len)
+            (insert (aref str new-idx))
+            (setq new-idx (1+ new-idx))))))
+    (setf (typewrite-job-index job) new-idx)
+    (when (and follow (> new-idx old-idx))
+      (typewrite--follow-marker job marker))))
+
+(defun typewrite--follow-marker (job marker)
+  "Scroll windows showing JOB's buffer to MARKER."
+  (dolist (win (get-buffer-window-list (typewrite-job-buffer job) nil t))
+    (set-window-point win (marker-position marker))))
 
 (defun typewrite-kill-jobs ()
   "Stop all active typewriter jobs and cancel the driver timer.
