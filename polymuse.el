@@ -32,11 +32,18 @@
 (require 'typewrite)
 (require 'markdown-mode)
 
+(defvar polymuse-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-e") #'polymuse-edit-instructions)
+    (define-key map (kbd "C-c C-r") #'polymuse-run-review)
+    (define-key map (kbd "C-c C-d") #'polymuse-kill-reviewer)
+    (define-key map (kbd "C-c C-D") #'polymuse-kill-all-reviewers)))
+
 (define-minor-mode polymuse-mode
   "LLM over-the-shoulder assistant."
   :init-value nil
   :lighter "PolyMuse"
-  :keymap (make-sparse-keymap)
+  :keymap polymuse-keymap
   (if polymuse-mode
       (polymuse--enable)
     (polymuse--disable)))
@@ -71,7 +78,7 @@
 When the buffer grows larger than this, the beginning will be truncated."
   :type 'integer)
 
-(defcustom polymuse-idle-seconds 60
+(defcustom polymuse-idle-seconds 15
   "Default delay in seconds between Polymuse review requests."
   :type 'number)
 
@@ -388,10 +395,6 @@ recenter those windows."
                   (when (> delete-end (point-min))
                     (delete-region (point-min) delete-end)))))))))))
 
-(defcustom polymuse-model nil
-  "Model to use with polymuse."
-  :type 'string)
-
 (defcustom polymuse-system-prompt
   (string-join
    '("You are an over-the-shoulder reviewer. Provide feedback and advice on the"
@@ -619,8 +622,13 @@ If BUFFER is specified, the unit will be pulled from the point in that buffer."
           (let* ((interval (polymuse-review-state-interval review))
                  (last-run (or (polymuse-review-state-last-run-time review) 0))
                  (now (float-time)))
-            (when (> (- now last-run) interval)
-              (polymuse--run-review buf review))))))))
+            (if (> (- now last-run) interval)
+                (progn
+                  (message "executing review for %s"
+                           (polymuse-review-state-id review))
+                  (polymuse--run-review buf review))
+              (message "skipping %s, review too recent"
+                       (polymuse-review-state-id review)))))))))
 
 (defsubst polymuse--region-length (region)
   "Return the length of REGION (a cons of BEG . END), or 0 if nil."
@@ -753,6 +761,7 @@ If BUFFER is specified, the unit will be pulled from the point in that buffer."
 
 (defun polymuse-reset-output (&optional buffer)
   "Reset the review output of BUFFER. Query for review if there's more than one."
+  (interactive)
   (let* ((buff (or buffer (current-buffer)))
          (selection (polymuse--select-review buff)))
     (polymuse--erase-buffer (polymuse-review-state-output-buffer (cdr selection)))))
@@ -773,52 +782,68 @@ If called from a buffer under review, look at `polymuse-reviews':
  - If there's exactly one review, edit that one.
  - If there are more than one, prompt the user to select which to edit."
   (interactive)
-  (cond
-   ;; case 1: we're in a reviewer buffer
-   ((polymuse--review-output-buffer-p (current-buffer))
-    (progn
-      (when (not (boundp 'polymuse--buffer-review-state))
-        (error "In review buffer, but `polymuse--buffer-review-state' is not set"))
-      (polymuse--edit-review-instructions polymuse--buffer-review-state)))
-   ;; case 2: we're in the buffer under review, with a list of reviewers
-   ((polymuse--reviewed-buffer-p (current-buffer))
-    (let* ((selection (polymuse--select-review (current-buffer)))
-           (review (cdr selection)))
-      (unless review
-        (user-error "No reviewer found for id %s" (car selection)))
-      (polymuse--edit-review-instructions review)))
-   (t (user-error "No polymuse review state found for this buffer"))))
+  (let* ((buf (current-buffer))
+         (selection (polymuse--select-review buf))
+         (review (cdr selection)))
+    (unless review
+      (user-error "Unable to open instructions for review %s"
+                  (car selection)))
+    (polymuse--edit-review-instructions (cdr selection))))
 
 (defvar-local polymuse--buffer-review-state nil
   "The `polymuse-review-state' struct associated with a review buffer.")
 
 (defun polymuse--edit-review-instructions (review)
-  "Given a `polymuse-review-state' struct in REVIEW, let the user modify and save the review instructions."
+  "Given a `polymuse-review-state' REVIEW, let the user modify and save the review instructions."
   (let ((buf (get-buffer-create (format "*polymuse prompt:%s*"
                                         (polymuse-review-state-id review))))
         (instructions (or (polymuse-review-state-instructions review) "")))
     (with-current-buffer buf
       (erase-buffer)
+      (polymuse-instructions-mode)
       (insert instructions)
-      (org-mode)
       (goto-char (point-min))
       (setq-local polymuse--buffer-review-state review))
-    (display-buffer buf)))
+    (display-buffer buf)
+    (select-window buf)))
 
 (defun polymuse-save-instructions ()
   "Save an edited reviewer prompt to the associated `polymuse-review-state' struct."
   (interactive)
-  (unless (eq major-mode 'org-mode)
-    (user-error "This command expects a polymuse prompt buffer"))
+  (unless (eq major-mode 'polymuse-instructions-mode)
+    (user-error "This command must be called from a polymuse instructions buffer"))
   (let* ((state        (buffer-local-value 'polymuse--buffer-review-state (current-buffer)))
          (reviewer-id  (polymuse-review-state-id state))
          (instructions (buffer-substring-no-properties (point-min) (point-max))))
     (setf (polymuse-review-state-instructions state) instructions)
+    (quit-window 'kill)
     (message "Local prompt for reviewer %s updated." reviewer-id)))
+
+(defun polymuse-close-instructions ()
+  "Close an edited reviewer prompt without saving."
+  (interactive)
+  (unless (eq major-mode 'polymuse-instructions-mode)
+    (user-error "This command must be called from a polymuse instructions buffer"))
+  (quit-window 'kill))
+
+(defvar polymuse-suggestions-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-e") #'polymuse-edit-instructions)
+    (define-key map (kbd "C-c C-k") #'polymuse-reset-output)))
 
 (define-derived-mode polymuse-suggestions-mode special-mode "Polymuse"
   "Mode for displaying AI suggestions from Polymuse."
+  :keymap polymuse-suggestions-keymap
   (markdown-mode))
+
+(defvar polymuse-instructions-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-c") #'polymuse-save-instructions)
+    (define-key map (kbd "C-c x") #'polymuse-close-instructions)))
+
+(define-derived-mode polymuse-instructions-mode org-mode "Polymuse"
+  "Mode for editing AI instruction prompt for Polymuse reviewer."
+  :keymap polymuse-instructions-keymap)
 
 (defcustom polymuse-default-interval 60
   "Default idle time (in seconds) between Polymuse reviews."
