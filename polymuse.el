@@ -861,7 +861,9 @@ If called from a buffer under review, look at `polymuse-reviews':
           (polymuse-suggestions-mode)
           (polymuse--truncate-buffer-to-length (current-buffer)
                                                (polymuse-review-state-buffer-size-limit review))
-          (typewrite-enqueue-job response outbuf :inhibit-read-only t))))))
+          (typewrite-enqueue-job response outbuf
+                                 :inhibit-read-only t
+                                 :follow t))))))
 
 (defun polymuse--kill-reviewer (buffer review)
   "Remove a REVIEW from BUFFER, and delete its output buffer."
