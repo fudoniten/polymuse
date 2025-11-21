@@ -30,6 +30,7 @@
 (require 'subr-x)
 (require 'url)
 (require 'typewrite)
+(require 'markdown-mode)
 
 (define-minor-mode polymuse-mode
   "LLM over-the-shoulder assistant."
@@ -164,25 +165,27 @@ When the buffer grows larger than this, the beginning will be truncated."
   "ID of default backend for Polymuse."
   :type 'symbol)
 
-(defun polymuse--interactive-setup-default-backend ()
-  "Interactively create a default Polymuse backend, returning it.
-
-Currently defaults to Ollama and prompts for host + model."
+(defun polymuse--interactive-setup-backend ()
+  "Define a new backend."
   (let* ((backend-type (completing-read
                         "Polymuse backend type: "
                         '("Ollama" "OpenAI")
                         nil t nil nil "Ollama")))
     (pcase backend-type
-      ("Ollama" (setq polymuse-default-backend-id (polymuse--setup-ollama-backend)))
-      ("OpenAI" (setq polymuse-default-backend-id (polymuse--setup-openai-backend)))
+      ("Ollama" (polymuse--setup-ollama-backend))
+      ("OpenAI" (polymuse--setup-openai-backend))
       (_ (user-error "Unsupported backend type: %s" backend-type)))))
+
+(defun polymuse--interactive-setup-default-backend ()
+  "Interactively create a default Polymuse backend, returning it."
+  (setq polymuse-default-backend-id (polymuse--interactive-setup-backend)))
 
 (defun polymuse-define-default-backend ()
   "Interactively define the default Polymuse backend."
   (interactive)
-  (let ((backend (polymuse--interactive-setup-default-backend)))
-    (if backend
-        (message "Set default Polymuse backend to %s" (polymuse-backend-id backend))
+  (let ((id (polymuse--interactive-setup-default-backend)))
+    (if id
+        (message "Set default Polymuse backend to %s" id)
       (user-error "No backend configured"))))
 
 (defun polymuse--delete-backend (backend-id)
@@ -331,7 +334,7 @@ Signals `polymuse-json-error' if parsing fails or the field is missing."
         (insert "\n\nEND REQUEST\n\n")))
     (let ((gptel-backend executor)
           (gptel-model   model))
-      (gptel-request request
+      (gptel-request (json-serialize request)
         :system   system
         :callback handler))))
 
@@ -371,20 +374,19 @@ recenter those windows."
              (integerp max-chars)
              (>= max-chars 0))
     (with-current-buffer buffer
-      (when buffer-read-only
-        (user-error "Buffer %s is read-only" (buffer-name)))
       (save-excursion
         (save-restriction
-          (widen)
-          (let* ((size   (buffer-size))
-                 (excess (- size max-chars)))
-            (when (> excess 0)
-              (let ((delete-end (+ (point-min) excess)))
-                (goto-char delete-end)
-                (end-of-line)
-                (setq delete-end (min (point-max) (point)))
-                (when (> delete-end (point-min))
-                  (delete-region (point-min) delete-end))))))))))
+          (let ((inhibit-read-only t))
+            (widen)
+            (let* ((size   (buffer-size))
+                   (excess (- size max-chars)))
+              (when (> excess 0)
+                (let ((delete-end (+ (point-min) excess)))
+                  (goto-char delete-end)
+                  (end-of-line)
+                  (setq delete-end (min (point-max) (point)))
+                  (when (> delete-end (point-min))
+                    (delete-region (point-min) delete-end)))))))))))
 
 (defcustom polymuse-model nil
   "Model to use with polymuse."
@@ -393,15 +395,16 @@ recenter those windows."
 (defcustom polymuse-system-prompt
   (string-join
    '("You are an over-the-shoulder reviewer. Provide feedback and advice on the"
-     "content provided, according to further instructions. Respond in Emacs"
-     "`org-mode' format, or in plain text.")
+     "content provided, according to further instructions. Respond in markdown"
+     "format, or in plain text. Make the reviews short and sweet, and provide"
+     "specific, actionable advice.")
    " ")
   "Base system prompt for polymuse."
   :type 'string)
 
 (defcustom polymuse-mode-prompts
   '((prog-mode . "Provide feedback on the code in the `current.focus-region' field below. Focus on clarity, reuse, improvements, library suggestions and general quality. This is part of an ongoing stream of advice.")
-    (text-mode . "Provide feedback on the prose content in the `current.focus-region' field below. This is part of an ongoing stream of advice."))
+    (text-mode . "Provide feedback on the prose content in the `current.focus-region' field below. This is part of an ongoing stream of advice. Keept the tone casual, and use lots of examples."))
   "Mode-specific prompt for the polymuse over-the-shoulder assistant."
   :type '(alist :key-type symbol :value-type string))
 
@@ -717,6 +720,52 @@ If BUFFER is specified, the unit will be pulled from the point in that buffer."
           ,@(when polymuse-final-instructions
               (list `(instructions . ,polymuse-final-instructions))))))))
 
+(defun polymuse--reviewed-buffer-p (&optional buffer)
+  "Return t if a BUFFER is a buffer under review."
+  (with-current-buffer (or buffer (current-buffer))
+    (bound-and-true-p polymuse-mode)))
+
+(defun polymuse--review-output-buffer-p (&optional buffer)
+  "Return t if a BUFFER is the output buffer of a Polymuse review."
+  (with-current-buffer (or buffer (current-buffer))
+    (eq major-mode 'polymuse-suggestions-mode)))
+
+(defun polymuse--erase-buffer (buffer)
+  "Clear the contents of BUFFER."
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t))
+      (erase-buffer))))
+
+(defun polymuse--select-review (buffer)
+  "Given a BUFFER under review, interactively select and return the ID of a review."
+  (with-current-buffer buffer
+    (let ((reviews polymuse--reviews))
+      (pcase (length reviews)
+        (0 (user-error "No reviewers configured for this buffer"))
+        (1 (polymuse-review-state-id (car reviews)))
+        (_ (let* ((choices   (mapcar (lambda (state)
+                                       (cons (polymuse-review-state-id state) state))
+                                     reviews))
+                  (review-id (completing-read "Edit instructions for reviewer: "
+                                              (mapcar #'car choices) nil t))
+                  (review    (cdr (assoc review-id choices))))
+             (cons review-id review)))))))
+
+(defun polymuse-reset-output (&optional buffer)
+  "Reset the review output of BUFFER. Query for review if there's more than one."
+  (let* ((buff (or buffer (current-buffer)))
+         (selection (polymuse--select-review buff)))
+    (polymuse--erase-buffer (polymuse-review-state-output-buffer (cdr selection)))))
+
+(defun polymuse-run-review (&optional buffer)
+  "Select and run a Polymuse review on BUFFER."
+  (interactive)
+  (let* ((buf (or buffer (current-buffer)))
+         (selection (polymuse--select-review buf))
+         (review (cdr selection))
+         (target (polymuse-review-state-source-buffer review)))
+    (polymuse--run-review target review)))
+
 (defun polymuse-edit-instructions ()
   "Edit the buffer-specific instructions for Polymuse reviewer.
 
@@ -726,25 +775,18 @@ If called from a buffer under review, look at `polymuse-reviews':
   (interactive)
   (cond
    ;; case 1: we're in a reviewer buffer
-   ((and (boundp 'polymuse--buffer-review-state)
-         polymuse--buffer-review-state)
-    (polymuse--edit-review-instructions polymuse--buffer-review-state))
+   ((polymuse--review-output-buffer-p (current-buffer))
+    (progn
+      (when (not (boundp 'polymuse--buffer-review-state))
+        (error "In review buffer, but `polymuse--buffer-review-state' is not set"))
+      (polymuse--edit-review-instructions polymuse--buffer-review-state)))
    ;; case 2: we're in the buffer under review, with a list of reviewers
-   ((and (boundp 'polymuse--reviews)
-         polymuse--reviews)
-    (let ((reviews polymuse--reviews))
-      (pcase (length reviews)
-        (0 (user-error "No reviewers configured for this buffer"))
-        (1 (polymuse--edit-review-instructions (car reviews)))
-        (_ (let* ((choices   (mapcar (lambda (state)
-                                       (cons (polymuse-review-state-id state) state))
-                                     reviews))
-                  (choice-id (completing-read "Edit instructions for reviewer: "
-                                              (mapcar #'car choices) nil t))
-                  (state     (cdr (assoc choice-id choices))))
-             (unless state
-               (user-error "No reviewer found for id %s" choice-id))
-             (polymuse--edit-review-instructions state))))))
+   ((polymuse--reviewed-buffer-p (current-buffer))
+    (let* ((selection (polymuse--select-review (current-buffer)))
+           (review (cdr selection)))
+      (unless review
+        (user-error "No reviewer found for id %s" (car selection)))
+      (polymuse--edit-review-instructions review)))
    (t (user-error "No polymuse review state found for this buffer"))))
 
 (defvar-local polymuse--buffer-review-state nil
@@ -776,7 +818,7 @@ If called from a buffer under review, look at `polymuse-reviews':
 
 (define-derived-mode polymuse-suggestions-mode special-mode "Polymuse"
   "Mode for displaying AI suggestions from Polymuse."
-  (org-mode))
+  (markdown-mode))
 
 (defcustom polymuse-default-interval 60
   "Default idle time (in seconds) between Polymuse reviews."
@@ -817,9 +859,8 @@ If called from a buffer under review, look at `polymuse-reviews':
       (with-current-buffer outbuf
         (let ((inhibit-read-only t))
           (polymuse-suggestions-mode)
-          (polymuse--truncate-buffer-to-length
-           (current-buffer)
-           (polymuse-review-state-buffer-size-limit review))
+          (polymuse--truncate-buffer-to-length (current-buffer)
+                                               (polymuse-review-state-buffer-size-limit review))
           (typewrite-enqueue-job response outbuf :inhibit-read-only t))))))
 
 (defun polymuse--kill-reviewer (buffer review)
@@ -898,7 +939,58 @@ REVIEW-CONTEXT is the number of lines of earlier review to include in the
   prompt."
   (interactive)
   (let* ((id (or id (format "polymuse-%s-%d" (buffer-name) (float-time))))
-         (backend (or backend (polymuse-ensure-backend)))
+         (backend (or backend (polymuse-find-backend (polymuse--interactive-setup-backend))))
+         (suggestions-buf (or out-buffer
+                              (generate-new-buffer (format "*polymuse:%s*" id))))
+         (local-instructions (or instructions
+                                 (read-string "Review instructions (empty for none): ")))
+         (state (make-polymuse-review-state
+                 :id                 id
+                 :interval           interval
+                 :last-run-time      nil
+                 :last-hash          nil
+                 :buffer-size-limit  buffer-size-limit
+                 :output-buffer      suggestions-buf
+                 :instructions       (unless (string-empty-p local-instructions)
+                                       local-instructions)
+                 :backend            backend
+                 :review-context     review-context
+                 :source-buffer      (current-buffer))))
+    (push state polymuse--reviews)
+    (polymuse--enable)
+    (message "Polymuse review %s created with backend %s; suggestions in %s"
+             id (polymuse-backend-id backend) (buffer-name suggestions-buf))
+    (display-buffer suggestions-buf
+                    '((display-buffer-in-side-window)
+                      (side . right)
+                      (slot . 0)
+                      (window-width . 0.33)))
+    (polymuse--run-review (current-buffer) state)
+    state))
+
+(cl-defun polymuse-add-default-reviewer
+    (&key id
+          instructions
+          (interval polymuse-default-interval)
+          (buffer-size-limit polymuse-default-buffer-size-limit)
+          (review-context polymuse-default-review-context-lines)
+          out-buffer)
+  "Create a new Polymuse review buffer for the current buffer.
+
+ID is the identifier for this review, and will be generated if not provided.
+BACKEND is the backend (LLM) to which requests will be sent for review.
+INSTRUCTIONS are instructions specifically for this reviewer.
+INTERVAL is the time in seconds between review requests. A default will be used
+  if none is provided.
+BUFFER-SIZE-LIMIT is the size limit of the review buffer. It will be truncated
+  if it grows too large. A default will be used if none in provided.
+OUT-BUFFER is the buffer where reviews will be posted. A new buffer will be
+  created if none is provided.
+REVIEW-CONTEXT is the number of lines of earlier review to include in the
+  prompt."
+  (interactive)
+  (let* ((id (or id (format "polymuse-%s-%d" (buffer-name) (float-time))))
+         (backend (polymuse-ensure-backend))
          (suggestions-buf (or out-buffer
                               (generate-new-buffer (format "*polymuse:%s*" id))))
          (local-instructions (or instructions
