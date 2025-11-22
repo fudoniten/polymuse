@@ -24,6 +24,7 @@
 
 (require 'gptel)
 (require 'gptel-ollama)
+(require 'gptel-org)
 (require 'cl-lib)
 (require 'json)
 (require 'seq)
@@ -37,12 +38,16 @@
     (define-key map (kbd "C-c C-e") #'polymuse-edit-instructions)
     (define-key map (kbd "C-c C-r") #'polymuse-run-review)
     (define-key map (kbd "C-c C-d") #'polymuse-kill-reviewer)
-    (define-key map (kbd "C-c C-D") #'polymuse-kill-all-reviewers)))
+    (define-key map (kbd "C-c C-D") #'polymuse-kill-all-reviewers)
+    (define-key map (kbd "C-c C-o") #'polymuse-open-review)
+    (define-key map (kbd "C-c C-a") #'polymuse-add-reviewer)
+    (define-key map (kbd "C-c C-z") #'polymuse-reset-output)
+    map))
 
 (define-minor-mode polymuse-mode
   "LLM over-the-shoulder assistant."
   :init-value nil
-  :lighter "PolyMuse"
+  :lighter " Muse"
   :keymap polymuse-keymap
   (if polymuse-mode
       (polymuse--enable)
@@ -597,8 +602,8 @@ If BUFFER is specified, the unit will be pulled from the point in that buffer."
 (defun polymuse--run-review (src-buffer review)
   "Submit review request for SRC-BUFFER to LLM per config in REVIEW."
   (let ((backend (polymuse-review-state-backend review)))
-    (unless backend
-      (error "Polymuse: no backend configured, skipping review"))
+    (unless backend (error "Polymuse: no backend configured, skipping review"))
+    (message "Requesting Polymuse review: %s" (polymuse-review-state-id review))
     (with-current-buffer src-buffer
       (let ((old-hash (polymuse-review-state-last-hash review))
             (new-hash (polymuse--buffer-hash)))
@@ -615,6 +620,7 @@ If BUFFER is specified, the unit will be pulled from the point in that buffer."
 
 (defun polymuse--global-idle-tick ()
   "Check all muse-enabled buffers and run due reviews."
+  (message "Tick!")
   (dolist (buf (buffer-list))
     (with-current-buffer buf
       (when polymuse-mode
@@ -747,33 +753,44 @@ If BUFFER is specified, the unit will be pulled from the point in that buffer."
 (defun polymuse--select-review (buffer)
   "Given a BUFFER under review, interactively select and return the ID of a review."
   (with-current-buffer buffer
-    (let ((reviews polymuse--reviews))
-      (pcase (length reviews)
-        (0 (user-error "No reviewers configured for this buffer"))
-        (1 (polymuse-review-state-id (car reviews)))
-        (_ (let* ((choices   (mapcar (lambda (state)
-                                       (cons (polymuse-review-state-id state) state))
-                                     reviews))
-                  (review-id (completing-read "Edit instructions for reviewer: "
-                                              (mapcar #'car choices) nil t))
-                  (review    (cdr (assoc review-id choices))))
-             (cons review-id review)))))))
+    (if (polymuse--review-output-buffer-p buffer)
+        polymuse--buffer-review-state
+      (let ((reviews polymuse--reviews))
+        (pcase (length reviews)
+          (0 (user-error "No reviewers configured for this buffer"))
+          (1 (car reviews))
+          (_ (let* ((choices   (mapcar (lambda (state)
+                                         (cons (polymuse-review-state-id state) state))
+                                       reviews))
+                    (review-id (completing-read "Edit instructions for reviewer: "
+                                                (mapcar #'car choices) nil t)))
+               (cdr (assoc review-id choices)))))))))
 
 (defun polymuse-reset-output (&optional buffer)
   "Reset the review output of BUFFER. Query for review if there's more than one."
   (interactive)
   (let* ((buff (or buffer (current-buffer)))
-         (selection (polymuse--select-review buff)))
-    (polymuse--erase-buffer (polymuse-review-state-output-buffer (cdr selection)))))
+         (review (polymuse--select-review buff)))
+    (polymuse--erase-buffer (polymuse-review-state-output-buffer review))))
 
 (defun polymuse-run-review (&optional buffer)
   "Select and run a Polymuse review on BUFFER."
   (interactive)
   (let* ((buf (or buffer (current-buffer)))
-         (selection (polymuse--select-review buf))
-         (review (cdr selection))
+         (review (polymuse--select-review buf))
          (target (polymuse-review-state-source-buffer review)))
     (polymuse--run-review target review)))
+
+(defun polymuse--open-review (review)
+  "Open Polymuse REVIEW in a window."
+  (pop-to-buffer (polymuse-review-state-output-buffer review)))
+
+(defun polymuse-open-review ()
+  "Open Polymuse review in a window. If there's more than one, open selector."
+  (interactive)
+  (let* ((buf (current-buffer))
+         (review (polymuse--select-review buf)))
+    (polymuse--open-review review)))
 
 (defun polymuse-edit-instructions ()
   "Edit the buffer-specific instructions for Polymuse reviewer.
@@ -783,12 +800,8 @@ If called from a buffer under review, look at `polymuse-reviews':
  - If there are more than one, prompt the user to select which to edit."
   (interactive)
   (let* ((buf (current-buffer))
-         (selection (polymuse--select-review buf))
-         (review (cdr selection)))
-    (unless review
-      (user-error "Unable to open instructions for review %s"
-                  (car selection)))
-    (polymuse--edit-review-instructions (cdr selection))))
+         (review (polymuse--select-review buf)))
+    (polymuse--edit-review-instructions review)))
 
 (defvar-local polymuse--buffer-review-state nil
   "The `polymuse-review-state' struct associated with a review buffer.")
@@ -804,8 +817,7 @@ If called from a buffer under review, look at `polymuse-reviews':
       (insert instructions)
       (goto-char (point-min))
       (setq-local polymuse--buffer-review-state review))
-    (display-buffer buf)
-    (select-window buf)))
+    (pop-to-buffer buf)))
 
 (defun polymuse-save-instructions ()
   "Save an edited reviewer prompt to the associated `polymuse-review-state' struct."
@@ -826,24 +838,37 @@ If called from a buffer under review, look at `polymuse-reviews':
     (user-error "This command must be called from a polymuse instructions buffer"))
   (quit-window 'kill))
 
-(defvar polymuse-suggestions-keymap
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-e") #'polymuse-edit-instructions)
-    (define-key map (kbd "C-c C-k") #'polymuse-reset-output)))
+;; (defvar polymuse-suggestions-mode-map
+;;   (let ((map (make-sparse-keymap)))
+;;     (set-keymap-parent map markdown-mode-map)
+;;     (define-key map (kbd "C-c C-e") #'polymuse-edit-instructions)
+;;     (define-key map (kbd "C-c C-d") #'polymuse-reset-output)
+;;     map)
+;;   "Keymap for `polymuse-suggestions-mode', inheriting from `markdown-mode'.")
 
-(define-derived-mode polymuse-suggestions-mode special-mode "Polymuse"
-  "Mode for displaying AI suggestions from Polymuse."
-  :keymap polymuse-suggestions-keymap
-  (markdown-mode))
+(define-derived-mode polymuse-suggestions-mode markdown-mode " Review"
+  "Mode for displaying AI suggestions from Polymuse.")
 
-(defvar polymuse-instructions-keymap
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-c") #'polymuse-save-instructions)
-    (define-key map (kbd "C-c x") #'polymuse-close-instructions)))
+(define-key polymuse-suggestions-mode-map
+            (kbd "C-c C-e") #'polymuse-edit-instructions)
+(define-key polymuse-suggestions-mode-map
+            (kbd "C-c C-t") #'polymuse-reset-output)
 
-(define-derived-mode polymuse-instructions-mode org-mode "Polymuse"
-  "Mode for editing AI instruction prompt for Polymuse reviewer."
-  :keymap polymuse-instructions-keymap)
+;; (defvar polymuse-instructions-mode-map
+;;   (let ((map (make-sparse-keymap)))
+;;     (set-keymap-parent map markdown-mode-map)
+;;     (define-key map (kbd "C-c C-c") #'polymuse-save-instructions)
+;;     (define-key map (kbd "C-c C-d") #'polymuse-close-instructions)
+;;     map)
+;;   "Keymap for editing Polymuse prompt, inheriting from `markdown-mode'.")
+
+(define-derived-mode polymuse-instructions-mode markdown-mode " Prompt"
+  "Mode for editing AI instruction prompt for Polymuse reviewer.")
+
+(define-key polymuse-instructions-mode-map
+            (kbd "C-c C-c") #'polymuse-save-instructions)
+(define-key polymuse-instructions-mode-map
+            (kbd "C-c C-d") #'polymuse-close-instructions)
 
 (defcustom polymuse-default-interval 60
   "Default idle time (in seconds) between Polymuse reviews."
@@ -888,7 +913,8 @@ If called from a buffer under review, look at `polymuse-reviews':
                                                (polymuse-review-state-buffer-size-limit review))
           (typewrite-enqueue-job response outbuf
                                  :inhibit-read-only t
-                                 :follow t))))))
+                                 :follow t
+                                 :cps 45))))))
 
 (defun polymuse--kill-reviewer (buffer review)
   "Remove a REVIEW from BUFFER, and delete its output buffer."
@@ -912,36 +938,17 @@ If called from a buffer under review, look at `polymuse-reviews':
       (user-error "No active Polymuse reviewers configured for this buffer"))
     (dolist (review polymuse--reviews)
       (kill-buffer (polymuse-review-state-output-buffer review)))
-    (setq polymuse--reviews '())))
+    (setq polymuse--reviews '())
+    (message "Killed all polymuse reviewers.")))
 
 (defun polymuse-kill-reviewer (&optional buffer)
   "Select and kill a reviewer associated with BUFFER."
-  ;; TODO: if there's only one, just kill that one
   (interactive)
-  (with-current-buffer (or buffer (current-buffer))
-    (unless (or (and (boundp 'polymuse--reviews)
-                     polymuse--reviews)
-                (and (boundp 'polymuse--buffer-review-state)
-                     polymuse--buffer-review-state))
-      (user-error "No active Polymuse reviewers configured for this buffer"))
-    (if (and (boundp 'polymuse--buffer-review-state)
-             polymuse--buffer-review-state)
-        ;; This IS a review buffer
-        (let* ((review polymuse--buffer-review-state)
-               (parent (polymuse-review-state-source-buffer review)))
-          (switch-to-buffer parent)
-          (polymuse--kill-reviewer parent review)
-          (message "Killed polymuse reviewer: %s"
-                   (polymuse-review-state-id review)))
-      (let* ((buf (or buffer (current-buffer)))
-             (reviews (buffer-local-value 'polymuse--reviews buf))
-             (choices (mapcar (lambda (review) (cons (polymuse-review-state-id review) review))
-                              reviews))
-             (id      (completing-read "Kill reviewer: " (mapcar #'car choices) nil t))
-             (target  (cdr (assoc id choices))))
-        (unless target (user-error "No reviewer found for id %S" id))
-        (polymuse--kill-reviewer buf target)
-        (message "Killed polymuse reviewer: %s" id)))))
+  (let* ((buf (or buffer (current-buffer)))
+         (review (polymuse--select-review buf))
+         (parent (polymuse-review-state-source-buffer review)))
+    (polymuse--kill-reviewer parent review)
+    (message "Killed polymuse reviewer: %s" (polymuse-review-state-id review))))
 
 (cl-defun polymuse-add-reviewer
     (&key id
