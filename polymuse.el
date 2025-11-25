@@ -87,7 +87,7 @@ When the buffer grows larger than this, the beginning will be truncated."
   "Default delay in seconds between Polymuse review requests."
   :type 'number)
 
-(defvar polymuse--idle-timer nil
+(defvar polymuse--timer nil
   "Driver timer for active Polymuse reviewers.")
 
 (defcustom polymuse--debug nil
@@ -876,10 +876,10 @@ If called from a buffer under review, look at `polymuse-reviews':
 
 (defun polymuse--enable ()
   "Enable the Polymuse LLM live review mode."
-  (unless polymuse--idle-timer
-    (setq polymuse--idle-timer
-          (run-with-idle-timer polymuse-idle-seconds t
-                               #'polymuse--global-idle-tick)))
+  (unless polymuse--timer
+    (setq polymuse--timer
+          (run-with-timer polymuse-idle-seconds t
+                          #'polymuse--global-idle-tick)))
   (if (polymuse--code-mode-p)
       (setq polymuse--unit-grabber #'polymuse--get-unit-sexp
             polymuse--prev-context-grabber #'polymuse--get-context-before-point-sexps
@@ -890,11 +890,11 @@ If called from a buffer under review, look at `polymuse-reviews':
 
 (defun polymuse--disable ()
   "Disable the Polymuse LLM live review mode."
-  (when (and polymuse--idle-timer
+  (when (and polymuse--timer
              (not (cl-some (lambda (b) (with-current-buffer b polymuse-mode))
                            (buffer-list))))
-    (cancel-timer polymuse--idle-timer)
-    (setq polymuse--idle-timer nil)))
+    (cancel-timer polymuse--timer)
+    (setq polymuse--timer nil)))
 
 (defun polymuse--buffer-hash ()
   "Generate a hash for the current buffer, to detect differences."
