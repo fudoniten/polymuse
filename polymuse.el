@@ -35,13 +35,13 @@
 
 (defvar polymuse-keymap
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-e") #'polymuse-edit-instructions)
-    (define-key map (kbd "C-c C-r") #'polymuse-run-review)
-    (define-key map (kbd "C-c C-d") #'polymuse-kill-reviewer)
-    (define-key map (kbd "C-c C-D") #'polymuse-kill-all-reviewers)
-    (define-key map (kbd "C-c C-o") #'polymuse-open-review)
-    (define-key map (kbd "C-c C-a") #'polymuse-add-reviewer)
-    (define-key map (kbd "C-c C-z") #'polymuse-reset-output)
+    (define-key map (kbd "C-c C-r e") #'polymuse-edit-instructions)
+    (define-key map (kbd "C-c C-r r") #'polymuse-run-review)
+    (define-key map (kbd "C-c C-r d") #'polymuse-kill-reviewer)
+    (define-key map (kbd "C-c C-r D") #'polymuse-kill-all-reviewers)
+    (define-key map (kbd "C-c C-r o") #'polymuse-open-review)
+    (define-key map (kbd "C-c C-r a") #'polymuse-add-reviewer)
+    (define-key map (kbd "C-c C-r z") #'polymuse-reset-output)
     map))
 
 (define-minor-mode polymuse-mode
@@ -97,6 +97,12 @@ When the buffer grows larger than this, the beginning will be truncated."
 (defcustom polymuse-debug-buffer "*polymuse-debug*"
   "Buffer used to capture Polymuse debug input and output."
   :type 'string)
+
+(defvar-local polymuse-tools-file nil
+  "Project-local tools file for the current buffer.
+
+This should be a file name, absolute or relative to the current file,
+that defines any project-specific tools for Polymuse to use.")
 
 ;;;;
 ;; BACKENDS
@@ -219,7 +225,7 @@ When the buffer grows larger than this, the beginning will be truncated."
 (defun polymuse-ollama-list-models (host &optional protocol)
   "Return a list of available Ollama model names from HOST over PROTOCOL.
 
-HOST should be like \"localhost:11434\"."
+  HOST should be like \"localhost:11434\"."
   (let* ((url-request-method "GET")
          (url (format "%s://%s/api/tags" (or protocol "https") host))
          (buf (url-retrieve-synchronously url t t 5))) ;; 5s timeout
@@ -289,7 +295,7 @@ HOST should be like \"localhost:11434\"."
 (defun polymuse--extract-json-review (response)
   "Parse RESPONSE as JSON and return the value of the `review' field.
 
-Signals `polymuse-json-error' if parsing fails or the field is missing."
+  Signals `polymuse-json-error' if parsing fails or the field is missing."
   (condition-case err
       (let* ((json-object-type 'alist)
              (json-array-type  'list)
@@ -332,23 +338,26 @@ Signals `polymuse-json-error' if parsing fails or the field is missing."
          (model    (or (plist-get args :model)
                        (polymuse-backend-model backend)))
          (handler  (lambda (resp info)
-                     (let ((formatted (polymuse--format-response resp)))
-                       (when polymuse--debug
-                         (with-current-buffer (get-buffer-create polymuse-debug-buffer)
-                           (insert "\n\nRESPONSE:\n\n")
-                           (insert formatted)
-                           (insert "\n\nEND RESPONSE\n\n")))
-                       (when callback (funcall callback formatted info))))))
-    (when polymuse--debug
-      (with-current-buffer (get-buffer-create polymuse-debug-buffer)
-        (insert "\n\nREQUEST:\n\n")
-        (insert (polymuse--format-json (json-serialize request)))
-        (insert "\n\nEND REQUEST\n\n")))
-    (let ((gptel-backend executor)
-          (gptel-model   model))
-      (gptel-request (json-serialize request)
-        :system   system
-        :callback handler))))
+                     (when polymuse--debug
+                       (with-current-buffer (get-buffer-create polymuse-debug-buffer)
+                         (insert (format "INFO: %s" info))))
+                     (when polymuse--debug
+                       (with-current-buffer (get-buffer-create polymuse-debug-buffer)
+                         (insert "\n\nRESPONSE:\n\n")
+                         (insert resp)
+                         (insert "\n\nEND RESPONSE\n\n")))
+                     (when callback (funcall callback resp info)))))
+    (let ((request (json-serialize request)))
+      (when polymuse--debug
+        (with-current-buffer (get-buffer-create polymuse-debug-buffer)
+          (insert "\n\nREQUEST:\n\n")
+          (insert (polymuse--format-json request))
+          (insert "\n\nEND REQUEST\n\n")))
+      (let ((gptel-backend executor)
+            (gptel-model   model))
+        (gptel-request request
+          :system   system
+          :callback handler)))))
 
 (defun polymuse-find-backend (backend-id)
   "Given a BACKEND-ID, find the associated Polymuse backend."
@@ -357,9 +366,9 @@ Signals `polymuse-json-error' if parsing fails or the field is missing."
 (defun polymuse-ensure-backend (&optional backend-id)
   "Return a backend for the current buffer, prompting on first use.
 
-If BACKEND-ID is set, try to find that backend. Otherwise, use the buffer-local
-default or global `polymuse-default-backend', initializing it interactively if
-necessary."
+  If BACKEND-ID is set, try to find that backend. Otherwise, use the
+  buffer-local default or global `polymuse-default-backend', initializing
+  it interactively if necessary."
   (or (when backend-id
         (polymuse-find-backend backend-id))
       ;; Buffer-local default
@@ -372,12 +381,12 @@ necessary."
 (defun polymuse--truncate-buffer-to-length (buffer max-chars)
   "Truncate BUFFER from the top so it is at most MAX-CHARS characters long.
 
-Deletion is done in whole lines starting at `point-min`.
+  Deletion is done in whole lines starting at `point-min`.
 
-If BUFFER is visible in one or more windows, their view is left
-unchanged *unless* we must delete text that is currently visible
-in order to satisfy MAX-CHARS. In that case, Emacs will naturally
-recenter those windows."
+  If BUFFER is visible in one or more windows, their view is left
+  unchanged *unless* we must delete text that is currently visible
+  in order to satisfy MAX-CHARS. In that case, Emacs will naturally
+  recenter those windows."
   (interactive
    (list (current-buffer)
          (prefix-numeric-value
@@ -402,17 +411,15 @@ recenter those windows."
 
 (defcustom polymuse-system-prompt
   (string-join
-   '("You are an over-the-shoulder reviewer. Provide feedback and advice on the"
-     "content provided, according to further instructions. Respond in markdown"
-     "format, or in plain text. Make the reviews short and sweet, and provide"
-     "specific, actionable advice.")
+   '("You are an over-the-shoulder assistant. Respond in markdown format or"
+     "in plain text.")
    " ")
   "Base system prompt for polymuse."
   :type 'string)
 
 (defcustom polymuse-mode-prompts
   '((prog-mode . "Provide feedback on the code in the `current.focus-region' field below. Focus on clarity, reuse, improvements, library suggestions and general quality. This is part of an ongoing stream of advice.")
-    (text-mode . "Provide feedback on the prose content in the `current.focus-region' field below. This is part of an ongoing stream of advice. Keept the tone casual, and use lots of examples."))
+    (text-mode . "Provide feedback or react to the prose content in the `current.focus-region' field. You are providing an ongoing stream of feedback."))
   "Mode-specific prompt for the polymuse over-the-shoulder assistant."
   :type '(alist :key-type symbol :value-type string))
 
@@ -439,6 +446,7 @@ recenter those windows."
 
 (cl-defstruct polymuse-tool
   "Tool to expose to the LLM, allowing it to make calls back to Emacs."
+  name
   function
   description
   arguments)
@@ -446,7 +454,7 @@ recenter those windows."
 (defvar-local polymuse-local-tools '()
   "Tools to expose to the LLM, specific to the local buffer.
 
-Contains an alist of (FUN-NAME . FUN).")
+  Contains an alist of (FUN-NAME . FUN).")
 
 (defvar-local polymuse--reviews '()
   "List of all `polymuse-review-state' structs associated with this buffer.")
@@ -457,19 +465,19 @@ Contains an alist of (FUN-NAME . FUN).")
 (defun polymuse--collect-units-to-limit (limit start get-next)
   "Expand region from START by units until LIMIT chars, using GET-NEXT.
 
-START is a buffer position.
+  START is a buffer position.
 
-GET-NEXT is a function that takes the current region as a cons (BEG . END) and
-should either:
+  GET-NEXT is a function that takes the current region as a cons (BEG . END) and
+  should either:
 
   - Return a *larger* region (NEW-BEG . NEW-END) that strictly grows the old
-    one, or
+  one, or
   - Return nil if no further unit is available.
 
-This returns the *largest* region whose length does not exceed LIMIT
-characters. If GET-NEXT never manages to grow the region without going
-over LIMIT, the result is NIL. Callers can detect this case and fall
-back to a raw substring if needed."
+  This returns the *largest* region whose length does not exceed LIMIT
+  characters. If GET-NEXT never manages to grow the region without going
+  over LIMIT, the result is NIL. Callers can detect this case and fall
+  back to a raw substring if needed."
   (let* ((region (cons start start))
          (best   nil) ;; nil = no acceptable region yet
          (best-len 0)
@@ -497,8 +505,8 @@ back to a raw substring if needed."
 (defun polymuse--make-get-prev-wrapper (move-back-fn)
   "Return a GET-NEXT function that grows a region backward using MOVE-BACK-FN.
 
-MOVE-BACK-FN should move point to the previous logical unit
-boundary, e.g. `backward-paragraph` or `backward-sexp`."
+  MOVE-BACK-FN should move point to the previous logical unit
+  boundary, e.g. `backward-paragraph` or `backward-sexp`."
   (lambda (region)
     (let ((beg (car region))
           (end (cdr region)))
@@ -515,8 +523,8 @@ boundary, e.g. `backward-paragraph` or `backward-sexp`."
 (defun polymuse--make-get-next-wrapper (move-fwd-fn)
   "Return a GET-NEXT function that grows a region forward using MOVE-FWD-FN.
 
-MOVE-FWD-FN should move point to the next logical unit boundary,
-e.g. `forward-paragraph` or `forward-sexp`."
+  MOVE-FWD-FN should move point to the next logical unit boundary,
+  e.g. `forward-paragraph` or `forward-sexp`."
   (lambda (region)
     (let ((beg (car region))
           (end (cdr region)))
@@ -533,7 +541,7 @@ e.g. `forward-paragraph` or `forward-sexp`."
 (defun polymuse--get-context-before-point-paragraphs (limit &optional buffer pt)
   "Paragraph-based context puller, grabbing paragraphs up to LIMIT characters.
 
-Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
+  Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
   (with-current-buffer (or buffer (current-buffer))
     (polymuse--collect-units-to-limit limit
                                       (or pt (point))
@@ -542,7 +550,7 @@ Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
 (defun polymuse--get-context-after-point-paragraphs (limit &optional buffer pt)
   "Paragraph-based context puller, grabbing paragraphs up to LIMIT characters.
 
-Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
+  Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
   (with-current-buffer (or buffer (current-buffer))
     (polymuse--collect-units-to-limit limit
                                       (or pt (point))
@@ -551,7 +559,7 @@ Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
 (defun polymuse--get-context-before-point-sexps (limit &optional buffer pt)
   "Paragraph-based context puller, grabbing paragraphs up to LIMIT characters.
 
-Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
+  Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
   (with-current-buffer (or buffer (current-buffer))
     (polymuse--collect-units-to-limit limit
                                       (or pt (point))
@@ -560,7 +568,7 @@ Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
 (defun polymuse--get-context-after-point-sexps (limit &optional buffer pt)
   "Paragraph-based context puller, grabbing paragraphs up to LIMIT characters.
 
-Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
+  Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
   (with-current-buffer (or buffer (current-buffer))
     (polymuse--collect-units-to-limit limit
                                       (or pt (point))
@@ -569,9 +577,9 @@ Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
 (defun polymuse--get-unit-wrapper (go-back go-forward &optional buffer)
   "Pull the range of the current unit.
 
-GO-BACK is a function to go to the start of the current unit.
-GO-FORWARD is a function to go to the end of the current unit.
-If BUFFER is specified, the unit will be pulled from the point in that buffer."
+  GO-BACK is a function to go to the start of the current unit.
+  GO-FORWARD is a function to go to the end of the current unit.
+  If BUFFER is specified, the unit will be pulled from the point in that buffer."
   (with-current-buffer (or buffer (current-buffer))
     (let ((start) (end))
       (save-excursion
@@ -629,10 +637,7 @@ If BUFFER is specified, the unit will be pulled from the point in that buffer."
                  (last-run (or (polymuse-review-state-last-run-time review) 0))
                  (now (float-time)))
             (if (> (- now last-run) interval)
-                (progn
-                  (message "executing review for %s"
-                           (polymuse-review-state-id review))
-                  (polymuse--run-review buf review))
+                (polymuse--run-review buf review)
               (message "skipping %s, review too recent"
                        (polymuse-review-state-id review)))))))))
 
@@ -655,6 +660,18 @@ If BUFFER is specified, the unit will be pulled from the point in that buffer."
     (forward-line (- n))
     (buffer-substring-no-properties (point) (point-max))))
 
+(defun polymuse--load-tools ()
+  "Load project-specific tools from `polymuse-tools-file', if set."
+  (when polymuse-tools-file
+    (let* ((base-dir (or (and buffer-file-name
+                              (file-name-directory buffer-file-name))
+                         default-directory))
+           (file (if (file-name-absolute-p polymuse-tools-file)
+                     polymuse-tools-file
+                   (expand-file-name polymuse-tools-file base-dir))))
+      (when (file-readable-p file)
+        (load file nil 'nomessage)))))
+
 (defun polymuse--compose-prompt (review)
   "Generate the full prompt for REVIEW, for use with the PolyMuse backend LLM."
   (let* ((mode-prompt   (or (polymuse-get-mode-prompt) ""))
@@ -662,7 +679,7 @@ If BUFFER is specified, the unit will be pulled from the point in that buffer."
          ;; total char budget for this prompt
          (max-chars     (or polymuse--max-prompt-characters
                             most-positive-fixnum))
-         (tools-prompt (mapcar (lambda (tool) `(("tool-name"        . ,(car tool))
+         (tools-prompt (mapcar (lambda (tool) `(("tool-name"        . ,(polymuse-tool-name tool))
                                                 ("tool-args"        . ,(mapcar #'symbol-name (polymuse-tool-arguments (cdr tool))))
                                                 ("tool-description" . ,(polymuse-tool-description (cdr tool)))))
                                polymuse-local-tools))
@@ -795,9 +812,9 @@ If BUFFER is specified, the unit will be pulled from the point in that buffer."
 (defun polymuse-edit-instructions ()
   "Edit the buffer-specific instructions for Polymuse reviewer.
 
-If called from a buffer under review, look at `polymuse-reviews':
- - If there's exactly one review, edit that one.
- - If there are more than one, prompt the user to select which to edit."
+  If called from a buffer under review, look at `polymuse-reviews':
+  - If there's exactly one review, edit that one.
+  - If there are more than one, prompt the user to select which to edit."
   (interactive)
   (let* ((buf (current-buffer))
          (review (polymuse--select-review buf)))
@@ -847,12 +864,14 @@ If called from a buffer under review, look at `polymuse-reviews':
 ;;   "Keymap for `polymuse-suggestions-mode', inheriting from `markdown-mode'.")
 
 (define-derived-mode polymuse-suggestions-mode markdown-mode " Review"
-  "Mode for displaying AI suggestions from Polymuse.")
+  "Mode for displaying AI suggestions from Polymuse."
+  (setq-local truncate-lines nil)
+  (visual-line-mode 1))
 
 (define-key polymuse-suggestions-mode-map
-            (kbd "C-c C-e") #'polymuse-edit-instructions)
+            (kbd "C-c C-r e") #'polymuse-edit-instructions)
 (define-key polymuse-suggestions-mode-map
-            (kbd "C-c C-t") #'polymuse-reset-output)
+            (kbd "C-c C-r t") #'polymuse-reset-output)
 
 ;; (defvar polymuse-instructions-mode-map
 ;;   (let ((map (make-sparse-keymap)))
@@ -866,9 +885,9 @@ If called from a buffer under review, look at `polymuse-reviews':
   "Mode for editing AI instruction prompt for Polymuse reviewer.")
 
 (define-key polymuse-instructions-mode-map
-            (kbd "C-c C-c") #'polymuse-save-instructions)
+            (kbd "C-c C-r c") #'polymuse-save-instructions)
 (define-key polymuse-instructions-mode-map
-            (kbd "C-c C-d") #'polymuse-close-instructions)
+            (kbd "C-c C-r d") #'polymuse-close-instructions)
 
 (defcustom polymuse-default-interval 60
   "Default idle time (in seconds) between Polymuse reviews."
@@ -886,7 +905,8 @@ If called from a buffer under review, look at `polymuse-reviews':
             polymuse--next-context-grabber #'polymuse--get-context-after-point-sexps)
     (setq polymuse--unit-grabber #'polymuse--get-unit-paragraph
           polymuse--prev-context-grabber #'polymuse--get-context-before-point-paragraphs
-          polymuse--next-context-grabber #'polymuse--get-context-after-point-paragraphs)))
+          polymuse--next-context-grabber #'polymuse--get-context-after-point-paragraphs))
+  (polymuse--load-tools))
 
 (defun polymuse--disable ()
   "Disable the Polymuse LLM live review mode."
@@ -909,8 +929,9 @@ If called from a buffer under review, look at `polymuse-reviews':
       (with-current-buffer outbuf
         (let ((inhibit-read-only t))
           (polymuse-suggestions-mode)
-          (polymuse--truncate-buffer-to-length (current-buffer)
-                                               (polymuse-review-state-buffer-size-limit review))
+          (polymuse--truncate-buffer-to-length
+           (current-buffer)
+           (polymuse-review-state-buffer-size-limit review))
           (typewrite-enqueue-job response outbuf
                                  :inhibit-read-only t
                                  :follow t
@@ -960,16 +981,16 @@ If called from a buffer under review, look at `polymuse-reviews':
           out-buffer)
   "Create a new Polymuse review buffer for the current buffer.
 
-ID is the identifier for this review, and will be generated if not provided.
-BACKEND is the backend (LLM) to which requests will be sent for review.
-INSTRUCTIONS are instructions specifically for this reviewer.
-INTERVAL is the time in seconds between review requests. A default will be used
+  ID is the identifier for this review, and will be generated if not provided.
+  BACKEND is the backend (LLM) to which requests will be sent for review.
+  INSTRUCTIONS are instructions specifically for this reviewer.
+  INTERVAL is the time in seconds between review requests. A default will be used
   if none is provided.
-BUFFER-SIZE-LIMIT is the size limit of the review buffer. It will be truncated
+  BUFFER-SIZE-LIMIT is the size limit of the review buffer. It will be truncated
   if it grows too large. A default will be used if none in provided.
-OUT-BUFFER is the buffer where reviews will be posted. A new buffer will be
+  OUT-BUFFER is the buffer where reviews will be posted. A new buffer will be
   created if none is provided.
-REVIEW-CONTEXT is the number of lines of earlier review to include in the
+  REVIEW-CONTEXT is the number of lines of earlier review to include in the
   prompt."
   (interactive)
   (let* ((id (or id (format "polymuse-%s-%d" (buffer-name) (float-time))))
