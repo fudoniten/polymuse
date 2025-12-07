@@ -141,6 +141,7 @@ that defines any project-specific tools for Polymuse to use.")
   (gptel-make-ollama name
     :host     host
     :protocol (or protocol "https")
+    :key      nil
     :models   (list model)))
 
 (defun polymuse-create-openai-executor (name model)
@@ -348,16 +349,17 @@ that defines any project-specific tools for Polymuse to use.")
                          (insert "\n\nEND RESPONSE\n\n")))
                      (when callback (funcall callback resp info)))))
     (let ((request (json-serialize request)))
-      (when polymuse--debug
-        (with-current-buffer (get-buffer-create polymuse-debug-buffer)
-          (insert "\n\nREQUEST:\n\n")
-          (insert (polymuse--format-json request))
-          (insert "\n\nEND REQUEST\n\n")))
       (let ((gptel-backend executor)
-            (gptel-model   model))
-        (gptel-request request
-          :system   system
-          :callback handler)))))
+            (gptel-model   model)
+            (result        (gptel-request request
+                             :system   system
+                             :callback handler)))
+        (when polymuse--debug
+          (with-current-buffer (get-buffer-create polymuse-debug-buffer)
+            (insert "\n\nREQUEST:\n\n")
+            (insert (polymuse--format-json request))
+            (insert "\n\nEND REQUEST\n\n")))
+        result))))
 
 (defun polymuse-find-backend (backend-id)
   "Given a BACKEND-ID, find the associated Polymuse backend."
@@ -616,7 +618,7 @@ that defines any project-specific tools for Polymuse to use.")
       (let ((old-hash (polymuse-review-state-last-hash review))
             (new-hash (polymuse--buffer-hash)))
         (if (and old-hash (string= old-hash new-hash))
-            nil ;; No need to run review: buffer hasn't changed
+            (when polymuse--debug (message "skipping review, buffer is unchanged"))
           (let ((prompt (polymuse--compose-prompt review)))
             (setf (polymuse-review-state-last-run-time review) (float-time))
             (setf (polymuse-review-state-last-hash review) new-hash)

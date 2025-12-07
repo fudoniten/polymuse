@@ -185,8 +185,8 @@ drawer, subheadings, etc."
 (defun canon--set-section-text (entity-pos new-text)
   "Replace the full text under the entity at ENTITY-POS with NEW-TEXT.
 
-NEW-TEXT should be the complete org-mode subtree body (everything after
-the heading). Any existing content, including property drawers and
+NEW-TEXT should be the complete `org-mode' subtree body (everything
+after the heading). Any existing content, including property drawers and
 subheadings, will be replaced."
   (save-excursion
     (goto-char entity-pos)
@@ -207,6 +207,11 @@ subheadings, will be replaced."
   "Return the full canon entry for entity ID."
   (when-let* ((pos (canon--find-entity-heading id)))
     (canon--get-section-text pos)))
+
+(defun canon--set-entity-text (id text)
+  "Set the canon entry TEXT for entity ID."
+  (when-let* ((pos (canon--find-entity-heading id)))
+    (canon--set-section-text pos text)))
 
 (defun canon--get-entity-section (id section)
   "Return the canon entry for entity ID, under heading SECTION."
@@ -332,6 +337,13 @@ title starts with [TYPE]. Return point if found, or nil."
   "Given an entity ID, return the full text of that entity from the canon."
   (with-current-buffer (canon--get-buffer)
     (canon--get-entity-text id)))
+
+(defun canon-set-entity-text (id text)
+  "Replace the full text for entity ID with TEXT.
+
+All text, including properties and subheadings, will be replaced."
+  (with-current-buffer (canon--get-buffer)
+    (canon--set-entity-text id text)))
 
 (defun canon-get-entity-section (id sec)
   "Return SEC heading from within the entity ID from the canon."
