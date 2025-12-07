@@ -349,11 +349,11 @@ that defines any project-specific tools for Polymuse to use.")
                          (insert "\n\nEND RESPONSE\n\n")))
                      (when callback (funcall callback resp info)))))
     (let ((request (json-serialize request)))
-      (let ((gptel-backend executor)
-            (gptel-model   model)
-            (result        (gptel-request request
-                             :system   system
-                             :callback handler)))
+      (let* ((gptel-backend executor)
+             (gptel-model   model)
+             (result        (gptel-request request
+                              :system   system
+                              :callback handler)))
         (when polymuse--debug
           (with-current-buffer (get-buffer-create polymuse-debug-buffer)
             (insert "\n\nREQUEST:\n\n")
@@ -899,7 +899,7 @@ that defines any project-specific tools for Polymuse to use.")
   "Enable the Polymuse LLM live review mode."
   (unless polymuse--timer
     (setq polymuse--timer
-          (run-with-timer polymuse-idle-seconds t
+          (run-with-timer polymuse-default-interval t
                           #'polymuse--global-idle-tick)))
   (if (polymuse--code-mode-p)
       (setq polymuse--unit-grabber #'polymuse--get-unit-sexp
