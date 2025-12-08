@@ -83,10 +83,6 @@
 When the buffer grows larger than this, the beginning will be truncated."
   :type 'integer)
 
-(defcustom polymuse-idle-seconds 15
-  "Default delay in seconds between Polymuse review requests."
-  :type 'number)
-
 (defvar polymuse--timer nil
   "Driver timer for active Polymuse reviewers.")
 
@@ -899,7 +895,8 @@ that defines any project-specific tools for Polymuse to use.")
   "Enable the Polymuse LLM live review mode."
   (unless polymuse--timer
     (setq polymuse--timer
-          (run-with-timer polymuse-default-interval t
+          (run-with-timer polymuse-default-interval ;; How long to wait before the first review
+                          polymuse-default-interval ;; How long to pause between reviews
                           #'polymuse--global-idle-tick)))
   (if (polymuse--code-mode-p)
       (setq polymuse--unit-grabber #'polymuse--get-unit-sexp
