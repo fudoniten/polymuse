@@ -114,7 +114,8 @@ that defines any project-specific tools for Polymuse to use.")
 
 (cl-defstruct polymuse-backend-spec
   id
-  model)
+  model
+  temperature)
 
 (cl-defstruct (polymuse-ollama-backend-spec (:include polymuse-backend-spec))
   host
@@ -123,8 +124,9 @@ that defines any project-specific tools for Polymuse to use.")
 (cl-defstruct (polymuse-openai-backend-spec (:include polymuse-backend-spec)))
 
 (cl-defstruct polymuse-backend
-  id     ;; unique id for this backend
-  model)  ;; model name string
+  id            ;; unique id for this backend
+  model         ;; model name string
+  temperature)  ;; model temperature
 
 (cl-defstruct (polymuse-gptel-backend (:include polymuse-backend))
   executor)
@@ -151,11 +153,13 @@ that defines any project-specific tools for Polymuse to use.")
     (if existing
         existing
       (let* ((model    (polymuse-backend-spec-model spec))
+             (temperature (polymuse-backend-spec-temperature spec))
              (host     (polymuse-ollama-backend-spec-host spec))
              (protocol (polymuse-ollama-backend-spec-protocol spec))
              (backend  (make-polymuse-gptel-backend
-                        :id       id
-                        :model    model
+                        :id          id
+                        :model       model
+                        :temperature temperature
                         :executor (polymuse-create-ollama-executor id host model protocol))))
         (setf (alist-get id polymuse-backends)
               backend)
@@ -267,11 +271,13 @@ that defines any project-specific tools for Polymuse to use.")
          (models (or (polymuse-ollama-list-models host protocol)
                      (list (read-string "Model name: "))))
          (model  (completing-read "Ollama model: " models nil t))
+         (temperature (read-number "Model temperature (0.0 - 2.0): " 0.2))
          (id     (intern (format "ollama-%s" model)))
-         (spec   (make-polymuse-ollama-backend-spec :id       id
-                                                    :host     host
-                                                    :protocol protocol
-                                                    :model    model)))
+         (spec   (make-polymuse-ollama-backend-spec :id          id
+                                                    :host        host
+                                                    :protocol    protocol
+                                                    :model       model
+                                                    :temperature temperature)))
     (polymuse--initialize-backend spec)
     id))
 
@@ -334,6 +340,8 @@ that defines any project-specific tools for Polymuse to use.")
          (executor (polymuse-gptel-backend-executor backend))
          (model    (or (plist-get args :model)
                        (polymuse-backend-model backend)))
+         (temperature (or (plist-get args :temperature)
+                          (polymuse-backend-temperature backend)))
          (handler  (lambda (resp info)
                      (when polymuse--debug
                        (with-current-buffer (get-buffer-create polymuse-debug-buffer)
@@ -345,11 +353,12 @@ that defines any project-specific tools for Polymuse to use.")
                          (insert "\n\nEND RESPONSE\n\n")))
                      (when callback (funcall callback resp info)))))
     (let ((request (json-serialize request)))
-      (let* ((gptel-backend executor)
-             (gptel-model   model)
-             (result        (gptel-request request
-                              :system   system
-                              :callback handler)))
+      (let* ((gptel-backend     executor)
+             (gptel-model       model)
+             (gptel-temperature temperature)
+             (result (gptel-request request
+                       :system   system
+                       :callback handler)))
         (when polymuse--debug
           (with-current-buffer (get-buffer-create polymuse-debug-buffer)
             (insert "\n\nREQUEST:\n\n")
@@ -626,7 +635,7 @@ that defines any project-specific tools for Polymuse to use.")
 
 (defun polymuse--global-idle-tick ()
   "Check all muse-enabled buffers and run due reviews."
-  (message "Tick!")
+  (when polymuse--debug  (message "Polymuse: Tick!"))
   (dolist (buf (buffer-list))
     (with-current-buffer buf
       (when polymuse-mode
@@ -926,12 +935,16 @@ that defines any project-specific tools for Polymuse to use.")
         (error "Output buffer %s for review %s is not live"
                outbuf (polymuse-review-state-id review))
       (with-current-buffer outbuf
-        (let ((inhibit-read-only t))
+        (let ((inhibit-read-only t)
+              (full-response (concat "\n\n>>> "
+                                     (format-time-string "%H:%M:%S")
+                                     "\n\n"
+                                     response)))
           (polymuse-suggestions-mode)
           (polymuse--truncate-buffer-to-length
            (current-buffer)
            (polymuse-review-state-buffer-size-limit review))
-          (typewrite-enqueue-job response outbuf
+          (typewrite-enqueue-job full-response outbuf
                                  :inhibit-read-only t
                                  :follow t
                                  :cps 45))))))
