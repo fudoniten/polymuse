@@ -137,10 +137,10 @@ that defines any project-specific tools for Polymuse to use.")
 (defun polymuse-create-ollama-executor (name host model &optional protocol)
   "Set up Polymuse Ollama backend NAME for HOST with MODEL over PROTOCOL."
   (gptel-make-ollama name
-    :host     host
-    :protocol (or protocol "https")
-    :key      nil
-    :models   (list model)))
+                     :host     host
+                     :protocol (or protocol "https")
+                     :key      nil
+                     :models   (list model)))
 
 (defun polymuse-create-openai-executor (name model)
   "Set up Polymuse Ollama backend NAME for HOST with MODEL over PROTOCOL."
@@ -862,14 +862,6 @@ that defines any project-specific tools for Polymuse to use.")
     (user-error "This command must be called from a polymuse instructions buffer"))
   (quit-window 'kill))
 
-;; (defvar polymuse-suggestions-mode-map
-;;   (let ((map (make-sparse-keymap)))
-;;     (set-keymap-parent map markdown-mode-map)
-;;     (define-key map (kbd "C-c C-e") #'polymuse-edit-instructions)
-;;     (define-key map (kbd "C-c C-d") #'polymuse-reset-output)
-;;     map)
-;;   "Keymap for `polymuse-suggestions-mode', inheriting from `markdown-mode'.")
-
 (define-derived-mode polymuse-suggestions-mode markdown-mode " Review"
   "Mode for displaying AI suggestions from Polymuse."
   (setq-local truncate-lines nil)
@@ -880,21 +872,13 @@ that defines any project-specific tools for Polymuse to use.")
 (define-key polymuse-suggestions-mode-map
             (kbd "C-c C-r t") #'polymuse-reset-output)
 
-;; (defvar polymuse-instructions-mode-map
-;;   (let ((map (make-sparse-keymap)))
-;;     (set-keymap-parent map markdown-mode-map)
-;;     (define-key map (kbd "C-c C-c") #'polymuse-save-instructions)
-;;     (define-key map (kbd "C-c C-d") #'polymuse-close-instructions)
-;;     map)
-;;   "Keymap for editing Polymuse prompt, inheriting from `markdown-mode'.")
-
 (define-derived-mode polymuse-instructions-mode markdown-mode " Prompt"
   "Mode for editing AI instruction prompt for Polymuse reviewer.")
 
 (define-key polymuse-instructions-mode-map
-            (kbd "C-c C-r c") #'polymuse-save-instructions)
+            (kbd "C-c C-c") #'polymuse-save-instructions)
 (define-key polymuse-instructions-mode-map
-            (kbd "C-c C-r d") #'polymuse-close-instructions)
+            (kbd "C-c C-d") #'polymuse-close-instructions)
 
 (defcustom polymuse-default-interval 60
   "Default idle time (in seconds) between Polymuse reviews."
