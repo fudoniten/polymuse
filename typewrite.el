@@ -132,13 +132,10 @@ Insert that many characters at the job's marker, update its index, and remove
 finished or dead jobs.
 
 If no jobs remain after this tick, cancel `typewrite--timer' and set it to nil."
-  (let* ((now (float-time))
-         (alive-jobs nil))
-    (dolist (job typewrite--jobs)
-      (when (typewrite--process-job job now)
-        (push job alive-jobs)))
-    ;; update global job list
-    (setq typewrite--jobs (nreverse alive-jobs))
+  (let ((now (float-time)))
+    (setq typewrite--jobs
+          (cl-remove-if-not (lambda (job) (typewrite--process-job job now))
+                            typewrite--jobs))
     ;; if no jobs remain, stop the timer
     (when (and (null typewrite--jobs)
                typewrite--timer)

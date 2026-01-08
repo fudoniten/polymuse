@@ -73,18 +73,16 @@
 
 If TYPE is non-nil, require that the heading title start with [TYPE]. ID
 and TYPE should be strings."
-  (save-excursion
-    (goto-char (point-min))
-    (let ((found nil))
-      (while (and (not found)
-                  (re-search-forward org-heading-regexp nil t))
-        (when (and (equal (org-entry-get nil "ID") id)
-                   (or (not type)
-                       (string-match-p
-                        (format "\\[%s\\]" (regexp-quote type))
-                        (nth 4 (org-heading-components)))))
-          (setq found (point))))
-      found)))
+  (catch 'found
+    (org-map-entries
+     (lambda ()
+       (when (and (equal (org-entry-get nil "ID") id)
+                  (or (not type)
+                      (string-match-p
+                       (format "\\[%s\\]" (regexp-quote type))
+                       (nth 4 (org-heading-components)))))
+         (throw 'found (point))))
+     t 'file)))
 
 (defun canon--get-subheading-text (entity-pos subheading)
   "From ENTITY-POS, return text under SUBHEADING.
