@@ -69,7 +69,7 @@
   "Protocol with which to interact with polymuse."
   :type 'string)
 
-(defcustom polymuse--max-prompt-characters 12000
+(defcustom polymuse-max-prompt-characters 12000
   "Maximum length of a prompt, in characters."
   :type 'integer)
 
@@ -86,7 +86,7 @@ When the buffer grows larger than this, the beginning will be truncated."
 (defvar polymuse--timer nil
   "Driver timer for active Polymuse reviewers.")
 
-(defcustom polymuse--debug nil
+(defcustom polymuse-debug nil
   "Enable Polymuse debug mode."
   :type 'boolean)
 
@@ -331,7 +331,7 @@ If the server is unreachable, you may experience UI freezing."
 (defun polymuse-toggle-debug ()
   "Toggle Polymuse debug mode."
   (interactive)
-  (setq polymuse--debug (not polymuse--debug)))
+  (setq polymuse-debug (not polymuse-debug)))
 
 (cl-defgeneric polymuse-request-review (backend request &key system callback &allow-other-keys)
   "Execute REQUEST to the given BACKEND, calling CALLBACK upon completion.")
@@ -346,10 +346,10 @@ If the server is unreachable, you may experience UI freezing."
          (temperature (or (plist-get args :temperature)
                           (polymuse-backend-temperature backend)))
          (handler  (lambda (resp info)
-                     (when polymuse--debug
+                     (when polymuse-debug
                        (with-current-buffer (get-buffer-create polymuse-debug-buffer)
                          (insert (format "INFO: %s" info))))
-                     (when polymuse--debug
+                     (when polymuse-debug
                        (with-current-buffer (get-buffer-create polymuse-debug-buffer)
                          (insert "\n\nRESPONSE:\n\n")
                          (insert resp)
@@ -362,7 +362,7 @@ If the server is unreachable, you may experience UI freezing."
              (result (gptel-request request
                        :system   system
                        :callback handler)))
-        (when polymuse--debug
+        (when polymuse-debug
           (with-current-buffer (get-buffer-create polymuse-debug-buffer)
             (insert "\n\nREQUEST:\n\n")
             (insert (polymuse--format-json request))
@@ -626,7 +626,7 @@ If the server is unreachable, you may experience UI freezing."
       (let ((old-hash (polymuse-review-state-last-hash review))
             (new-hash (polymuse--buffer-hash)))
         (if (and old-hash (string= old-hash new-hash))
-            (when polymuse--debug (message "skipping review, buffer is unchanged"))
+            (when polymuse-debug (message "skipping review, buffer is unchanged"))
           (let ((prompt (polymuse--compose-prompt review)))
             (setf (polymuse-review-state-last-run-time review) (float-time))
             (setf (polymuse-review-state-last-hash review) new-hash)
@@ -638,7 +638,7 @@ If the server is unreachable, you may experience UI freezing."
 
 (defun polymuse--global-idle-tick ()
   "Check all muse-enabled buffers and run due reviews."
-  (when polymuse--debug  (message "Polymuse: Tick!"))
+  (when polymuse-debug  (message "Polymuse: Tick!"))
   (dolist (buf (buffer-list))
     (with-current-buffer buf
       (when polymuse-mode
@@ -687,7 +687,7 @@ If the server is unreachable, you may experience UI freezing."
   (let* ((mode-prompt   (or (polymuse-get-mode-prompt) ""))
          (local-prompt  (or (polymuse-review-state-instructions review) ""))
          ;; total char budget for this prompt
-         (max-chars     (or polymuse--max-prompt-characters
+         (max-chars     (or polymuse-max-prompt-characters
                             most-positive-fixnum))
          (tools-prompt (mapcar (lambda (tool) `(("tool-name"        . ,(polymuse-tool-name tool))
                                                 ("tool-args"        . ,(mapcar #'symbol-name (polymuse-tool-arguments (cdr tool))))
