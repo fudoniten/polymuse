@@ -57,13 +57,11 @@
   "Return the buffer visiting `canon-file', opening if needed."
   (unless canon-file
     (user-error "Can't open `canon-file', not defined"))
-  (let ((canon canon-file)
-        (buf (or (and (buffer-live-p canon--buffer)
+  (let ((buf (or (and (buffer-live-p canon--buffer)
                       canon--buffer)
                  (setq canon--buffer
                        (find-file-noselect canon-file)))))
     (with-current-buffer buf
-      (unless canon-file (setq-local canon-file canon))
       (unless (bound-and-true-p canon-mode)
         (canon-mode 1)))
     buf))
@@ -94,14 +92,14 @@ SUBHEADING is the entry title, minus the leading *s."
      (let ((end (save-excursion (org-end-of-subtree t t))))
        (if (re-search-forward
             (concat "^\\*+ +" (regexp-quote subheading) "\\b") end t)
-           (let ((start (line-end-position)))
+           (progn
              (forward-line 1)
-             (setq start (point))
-             (let ((sub-end (or (save-excursion
-                                  (when (re-search-forward "^\\*+ " end t)
-                                    (beginning-of-line)
-                                    (point)))
-                                end)))
+             (let* ((start (point))
+                    (sub-end (or (save-excursion
+                                   (when (re-search-forward "^\\*+ " end t)
+                                     (beginning-of-line)
+                                     (point)))
+                                 end)))
                (buffer-substring-no-properties start sub-end)))
          nil)))))
 
