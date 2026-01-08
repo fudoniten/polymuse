@@ -9,7 +9,7 @@
 ;; Version: 0.0.1
 ;; Keywords: docs outlines processes terminals text tools
 ;; Homepage: https://github.com/niten/polymuse
-;; Package-Requires: ((emacs "29.3"))
+;; Package-Requires: ((emacs "29.3") (gptel "0.9.0") (markdown-mode "2.5"))
 ;;
 ;; This file is not part of GNU Emacs.
 ;;
@@ -226,7 +226,10 @@ that defines any project-specific tools for Polymuse to use.")
 (defun polymuse-ollama-list-models (host &optional protocol)
   "Return a list of available Ollama model names from HOST over PROTOCOL.
 
-  HOST should be like \"localhost:11434\"."
+HOST should be like \"localhost:11434\".
+
+WARNING: This function blocks Emacs for up to 5 seconds while fetching models.
+If the server is unreachable, you may experience UI freezing."
   (let* ((url-request-method "GET")
          (url (format "%s://%s/api/tags" (or protocol "https") host))
          (buf (url-retrieve-synchronously url t t 5))) ;; 5s timeout
@@ -255,7 +258,7 @@ that defines any project-specific tools for Polymuse to use.")
 
 (defun polymuse--setup-openai-backend ()
   "Interactively create an OpenAI polymuse backend using gptel."
-  (let* ((model (read-string "OpenAI model (e.g. gpt-4.1-mini): " "gpt-4.1-mini"))
+  (let* ((model (read-string "OpenAI model (e.g. gpt-4o-mini): " "gpt-4o-mini"))
          (gptel-backend (gptel-make-openai "polymuse-openai"))
          (id (intern (format "openai-%s" model)))
          (spec (make-polymuse-openai-backend-spec :id id :model model)))
