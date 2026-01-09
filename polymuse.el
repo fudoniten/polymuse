@@ -9,13 +9,32 @@
 ;; Version: 0.0.1
 ;; Keywords: docs outlines processes terminals text tools
 ;; Homepage: https://github.com/niten/polymuse
-;; Package-Requires: ((emacs "29.3"))
+;; Package-Requires: ((emacs "29.3") (gptel "0.9.0") (markdown-mode "2.5"))
 ;;
 ;; This file is not part of GNU Emacs.
 ;;
 ;;; Commentary:
 ;;
-;;  Description
+;; Polymuse is an AI-powered "over-the-shoulder" coding assistant for Emacs.
+;; It provides continuous, context-aware code review and suggestions while
+;; you write code or prose.
+;;
+;; Features:
+;; - Automatic periodic reviews of your work
+;; - Context-aware suggestions based on surrounding code
+;; - Support for multiple LLM backends (Ollama, OpenAI)
+;; - Customizable review intervals and instructions
+;; - Typewriter-style animated output for a pleasant UX
+;;
+;; Quick Start:
+;; 1. Set up a backend: M-x polymuse-define-default-backend
+;; 2. Enable polymuse-mode in a buffer
+;; 3. Add a reviewer: M-x polymuse-add-reviewer
+;; 4. Customize instructions: C-c C-r e
+;;
+;; The reviewer will automatically provide feedback based on your cursor
+;; position and the surrounding context. Reviews appear in a side window
+;; and are updated periodically as you work.
 ;;
 ;;; Code:
 
@@ -69,7 +88,7 @@
   "Protocol with which to interact with polymuse."
   :type 'string)
 
-(defcustom polymuse--max-prompt-characters 12000
+(defcustom polymuse-max-prompt-characters 12000
   "Maximum length of a prompt, in characters."
   :type 'integer)
 
@@ -86,7 +105,7 @@ When the buffer grows larger than this, the beginning will be truncated."
 (defvar polymuse--timer nil
   "Driver timer for active Polymuse reviewers.")
 
-(defcustom polymuse--debug nil
+(defcustom polymuse-debug nil
   "Enable Polymuse debug mode."
   :type 'boolean)
 
@@ -226,7 +245,10 @@ that defines any project-specific tools for Polymuse to use.")
 (defun polymuse-ollama-list-models (host &optional protocol)
   "Return a list of available Ollama model names from HOST over PROTOCOL.
 
-  HOST should be like \"localhost:11434\"."
+HOST should be like \"localhost:11434\".
+
+WARNING: This function blocks Emacs for up to 5 seconds while fetching models.
+If the server is unreachable, you may experience UI freezing."
   (let* ((url-request-method "GET")
          (url (format "%s://%s/api/tags" (or protocol "https") host))
          (buf (url-retrieve-synchronously url t t 5))) ;; 5s timeout
@@ -255,7 +277,7 @@ that defines any project-specific tools for Polymuse to use.")
 
 (defun polymuse--setup-openai-backend ()
   "Interactively create an OpenAI polymuse backend using gptel."
-  (let* ((model (read-string "OpenAI model (e.g. gpt-4.1-mini): " "gpt-4.1-mini"))
+  (let* ((model (read-string "OpenAI model (e.g. gpt-4o-mini): " "gpt-4o-mini"))
          (gptel-backend (gptel-make-openai "polymuse-openai"))
          (id (intern (format "openai-%s" model)))
          (spec (make-polymuse-openai-backend-spec :id id :model model)))
@@ -328,7 +350,7 @@ that defines any project-specific tools for Polymuse to use.")
 (defun polymuse-toggle-debug ()
   "Toggle Polymuse debug mode."
   (interactive)
-  (setq polymuse--debug (not polymuse--debug)))
+  (setq polymuse-debug (not polymuse-debug)))
 
 (cl-defgeneric polymuse-request-review (backend request &key system callback &allow-other-keys)
   "Execute REQUEST to the given BACKEND, calling CALLBACK upon completion.")
@@ -343,14 +365,8 @@ that defines any project-specific tools for Polymuse to use.")
          (temperature (or (plist-get args :temperature)
                           (polymuse-backend-temperature backend)))
          (handler  (lambda (resp info)
-                     (when polymuse--debug
-                       (with-current-buffer (get-buffer-create polymuse-debug-buffer)
-                         (insert (format "INFO: %s" info))))
-                     (when polymuse--debug
-                       (with-current-buffer (get-buffer-create polymuse-debug-buffer)
-                         (insert "\n\nRESPONSE:\n\n")
-                         (insert resp)
-                         (insert "\n\nEND RESPONSE\n\n")))
+                     (polymuse--debug-log "INFO: %s" info)
+                     (polymuse--debug-log "\n\nRESPONSE:\n\n%s\n\nEND RESPONSE\n\n" resp)
                      (when callback (funcall callback resp info)))))
     (let ((request (json-serialize request)))
       (let* ((gptel-backend     executor)
@@ -359,11 +375,8 @@ that defines any project-specific tools for Polymuse to use.")
              (result (gptel-request request
                        :system   system
                        :callback handler)))
-        (when polymuse--debug
-          (with-current-buffer (get-buffer-create polymuse-debug-buffer)
-            (insert "\n\nREQUEST:\n\n")
-            (insert (polymuse--format-json request))
-            (insert "\n\nEND REQUEST\n\n")))
+        (polymuse--debug-log "\n\nREQUEST:\n\n%s\n\nEND REQUEST\n\n"
+                             (polymuse--format-json request))
         result))))
 
 (defun polymuse-find-backend (backend-id)
@@ -623,7 +636,7 @@ that defines any project-specific tools for Polymuse to use.")
       (let ((old-hash (polymuse-review-state-last-hash review))
             (new-hash (polymuse--buffer-hash)))
         (if (and old-hash (string= old-hash new-hash))
-            (when polymuse--debug (message "skipping review, buffer is unchanged"))
+            (when polymuse-debug (message "skipping review, buffer is unchanged"))
           (let ((prompt (polymuse--compose-prompt review)))
             (setf (polymuse-review-state-last-run-time review) (float-time))
             (setf (polymuse-review-state-last-hash review) new-hash)
@@ -635,7 +648,7 @@ that defines any project-specific tools for Polymuse to use.")
 
 (defun polymuse--global-idle-tick ()
   "Check all muse-enabled buffers and run due reviews."
-  (when polymuse--debug  (message "Polymuse: Tick!"))
+  (when polymuse-debug  (message "Polymuse: Tick!"))
   (dolist (buf (buffer-list))
     (with-current-buffer buf
       (when polymuse-mode
@@ -667,6 +680,13 @@ that defines any project-specific tools for Polymuse to use.")
     (forward-line (- n))
     (buffer-substring-no-properties (point) (point-max))))
 
+(defun polymuse--debug-log (format-string &rest args)
+  "Log debug message to Polymuse debug buffer if debug mode is enabled.
+FORMAT-STRING and ARGS are passed to `format'."
+  (when polymuse-debug
+    (with-current-buffer (get-buffer-create polymuse-debug-buffer)
+      (insert (apply #'format format-string args)))))
+
 (defun polymuse--load-tools ()
   "Load project-specific tools from `polymuse-tools-file', if set."
   (when polymuse-tools-file
@@ -677,32 +697,29 @@ that defines any project-specific tools for Polymuse to use.")
                      polymuse-tools-file
                    (expand-file-name polymuse-tools-file base-dir))))
       (when (file-readable-p file)
-        (load file nil 'nomessage)))))
+        (load file nil 'nomessage))))
 
-(defun polymuse--compose-prompt (review)
-  "Generate the full prompt for REVIEW, for use with the PolyMuse backend LLM."
-  (let* ((mode-prompt   (or (polymuse-get-mode-prompt) ""))
-         (local-prompt  (or (polymuse-review-state-instructions review) ""))
-         ;; total char budget for this prompt
-         (max-chars     (or polymuse--max-prompt-characters
-                            most-positive-fixnum))
-         (tools-prompt (mapcar (lambda (tool) `(("tool-name"        . ,(polymuse-tool-name tool))
-                                                ("tool-args"        . ,(mapcar #'symbol-name (polymuse-tool-arguments (cdr tool))))
-                                                ("tool-description" . ,(polymuse-tool-description (cdr tool)))))
-                               polymuse-local-tools))
+(defun polymuse--format-tools-prompt ()
+  "Format tools prompt for LLM from `polymuse-local-tools'."
+  (mapcar (lambda (tool)
+            `(("tool-name"        . ,(polymuse-tool-name tool))
+              ("tool-args"        . ,(mapcar #'symbol-name (polymuse-tool-arguments (cdr tool))))
+              ("tool-description" . ,(polymuse-tool-description (cdr tool)))))
+          polymuse-local-tools))
 
-         ;; Rough overhead for non-context text + headings/newlines.
-         (prompt-size   (+ (length mode-prompt)
+(defun polymuse--calculate-context-regions (max-chars mode-prompt local-prompt current-unit)
+  "Calculate forward and backward context regions within budget.
+
+MAX-CHARS is the total character budget.
+MODE-PROMPT and LOCAL-PROMPT are the base prompts.
+CURRENT-UNIT is the cons (BEG . END) of the current focus region.
+
+Returns a plist with :forward-context and :backward-context regions."
+  (let* ((prompt-size   (+ (length mode-prompt)
                            (length local-prompt)
                            80))
-
-         (current-unit  (funcall polymuse--unit-grabber))
          (current-len   (polymuse--region-length current-unit))
-
-         ;; Remaining budget for context.
          (context-space (max 0 (- max-chars prompt-size current-len)))
-
-         ;; Use at most half available space for forward context.
          (forward-budget  (max 0 (floor context-space 2)))
          (forward-context (and (> forward-budget 0)
                                (funcall polymuse--next-context-grabber
@@ -710,14 +727,26 @@ that defines any project-specific tools for Polymuse to use.")
                                         nil
                                         (and current-unit (cdr current-unit)))))
          (forward-len     (polymuse--region-length forward-context))
-
-         ;; Whatever is left goes to backward context.
          (backward-budget (max 0 (- context-space forward-len)))
          (backward-context (and (> backward-budget 0)
                                 (funcall polymuse--prev-context-grabber
                                          backward-budget
                                          nil
-                                         (and current-unit (car current-unit)))))
+                                         (and current-unit (car current-unit))))))
+    (list :forward-context forward-context
+          :backward-context backward-context)))
+
+(defun polymuse--compose-prompt (review)
+  "Generate the full prompt for REVIEW, for use with the PolyMuse backend LLM."
+  (let* ((mode-prompt   (or (polymuse-get-mode-prompt) ""))
+         (local-prompt  (or (polymuse-review-state-instructions review) ""))
+         (max-chars     (or polymuse-max-prompt-characters most-positive-fixnum))
+         (tools-prompt  (polymuse--format-tools-prompt))
+         (current-unit  (funcall polymuse--unit-grabber))
+         (context-regions (polymuse--calculate-context-regions
+                           max-chars mode-prompt local-prompt current-unit))
+         (forward-context  (plist-get context-regions :forward-context))
+         (backward-context (plist-get context-regions :backward-context))
          (out-buffer            (polymuse-review-state-output-buffer review))
          (existing-review-lines (polymuse-review-state-review-context review))
          (existing-review       (polymuse--grab-buffer-tail out-buffer existing-review-lines)))

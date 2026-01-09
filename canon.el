@@ -15,7 +15,28 @@
 ;;
 ;;; Commentary:
 ;;
-;;  Description
+;; Canon is a tool for managing the "canon" of a creative work - characters,
+;; locations, events, and other entities that need to be tracked for consistency.
+;;
+;; It uses Org-mode files to store entity information in a structured format,
+;; with top-level headings for entity types (e.g., "Characters", "Locations")
+;; and second-level headings for individual entities.
+;;
+;; Features:
+;; - Navigate to entities by ID
+;; - Insert new entities with custom types
+;; - Read and update entity information programmatically
+;; - Search entities by property values
+;; - Automatic type heading creation
+;;
+;; Usage:
+;; 1. Enable canon-mode in your writing buffer
+;; 2. Specify a canon file (e.g., canon.org) when prompted
+;; 3. Use C-c C-c i to insert entities
+;; 4. Use C-c C-c j to jump to an entity
+;; 5. Use C-c C-c t to add new entity types
+;;
+;; Entities are stored with :ID: properties for reliable cross-referencing.
 ;;
 ;;; Code:
 
@@ -57,13 +78,11 @@
   "Return the buffer visiting `canon-file', opening if needed."
   (unless canon-file
     (user-error "Can't open `canon-file', not defined"))
-  (let ((canon canon-file)
-        (buf (or (and (buffer-live-p canon--buffer)
+  (let ((buf (or (and (buffer-live-p canon--buffer)
                       canon--buffer)
                  (setq canon--buffer
                        (find-file-noselect canon-file)))))
     (with-current-buffer buf
-      (unless canon-file (setq-local canon-file canon))
       (unless (bound-and-true-p canon-mode)
         (canon-mode 1)))
     buf))
@@ -73,18 +92,16 @@
 
 If TYPE is non-nil, require that the heading title start with [TYPE]. ID
 and TYPE should be strings."
-  (save-excursion
-    (goto-char (point-min))
-    (let ((found nil))
-      (while (and (not found)
-                  (re-search-forward org-heading-regexp nil t))
-        (when (and (equal (org-entry-get nil "ID") id)
-                   (or (not type)
-                       (string-match-p
-                        (format "\\[%s\\]" (regexp-quote type))
-                        (nth 4 (org-heading-components)))))
-          (setq found (point))))
-      found)))
+  (catch 'found
+    (org-map-entries
+     (lambda ()
+       (when (and (equal (org-entry-get nil "ID") id)
+                  (or (not type)
+                      (string-match-p
+                       (format "\\[%s\\]" (regexp-quote type))
+                       (nth 4 (org-heading-components)))))
+         (throw 'found (point))))
+     t 'file)))
 
 (defun canon--get-subheading-text (entity-pos subheading)
   "From ENTITY-POS, return text under SUBHEADING.
@@ -96,14 +113,14 @@ SUBHEADING is the entry title, minus the leading *s."
      (let ((end (save-excursion (org-end-of-subtree t t))))
        (if (re-search-forward
             (concat "^\\*+ +" (regexp-quote subheading) "\\b") end t)
-           (let ((start (line-end-position)))
+           (progn
              (forward-line 1)
-             (setq start (point))
-             (let ((sub-end (or (save-excursion
-                                  (when (re-search-forward "^\\*+ " end t)
-                                    (beginning-of-line)
-                                    (point)))
-                                end)))
+             (let* ((start (point))
+                    (sub-end (or (save-excursion
+                                   (when (re-search-forward "^\\*+ " end t)
+                                     (beginning-of-line)
+                                     (point)))
+                                 end)))
                (buffer-substring-no-properties start sub-end)))
          nil)))))
 
