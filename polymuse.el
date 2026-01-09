@@ -813,476 +813,476 @@ review, or if it was modified within `polymuse-buffer-activity-timeout' seconds.
                   (polymuse--run-review buf review)
                 (when polymuse-debug
                   (message "skipping %s, review too recent or conditions not met"
-                           (polymuse-review-state-id review))))))))))
+                           (polymuse-review-state-id review)))))))))))
 
-  (defsubst polymuse--region-length (region)
-    "Return the length of REGION (a cons of BEG . END), or 0 if nil."
-    (if (and region (consp region))
-        (- (cdr region) (car region))
-      0))
+(defsubst polymuse--region-length (region)
+  "Return the length of REGION (a cons of BEG . END), or 0 if nil."
+  (if (and region (consp region))
+      (- (cdr region) (car region))
+    0))
 
-  (defsubst polymuse--region-string (region)
-    "Return the buffer substring for REGION, or an empty string if nil."
-    (if (and region (consp region))
-        (buffer-substring-no-properties (car region) (cdr region))
-      ""))
+(defsubst polymuse--region-string (region)
+  "Return the buffer substring for REGION, or an empty string if nil."
+  (if (and region (consp region))
+      (buffer-substring-no-properties (car region) (cdr region))
+    ""))
 
-  (defun polymuse--grab-buffer-tail (buffer n)
-    "Return the last N lines from BUFFER as a string."
-    (with-current-buffer buffer
-      (goto-char (point-max))
-      (forward-line (- n))
-      (buffer-substring-no-properties (point) (point-max))))
+(defun polymuse--grab-buffer-tail (buffer n)
+  "Return the last N lines from BUFFER as a string."
+  (with-current-buffer buffer
+    (goto-char (point-max))
+    (forward-line (- n))
+    (buffer-substring-no-properties (point) (point-max))))
 
-  (defun polymuse--debug-log (format-string &rest args)
-    "Log debug message to Polymuse debug buffer if debug mode is enabled.
+(defun polymuse--debug-log (format-string &rest args)
+  "Log debug message to Polymuse debug buffer if debug mode is enabled.
 FORMAT-STRING and ARGS are passed to `format'."
-    (when polymuse-debug
-      (with-current-buffer (get-buffer-create polymuse-debug-buffer)
-        (insert (apply #'format format-string args)))))
+  (when polymuse-debug
+    (with-current-buffer (get-buffer-create polymuse-debug-buffer)
+      (insert (apply #'format format-string args)))))
 
-  (defun polymuse--load-tools ()
-    "Load project-specific tools from `polymuse-tools-file', if set."
-    (when polymuse-tools-file
-      (let* ((base-dir (or (and buffer-file-name
-                                (file-name-directory buffer-file-name))
-                           default-directory))
-             (file (if (file-name-absolute-p polymuse-tools-file)
-                       polymuse-tools-file
-                     (expand-file-name polymuse-tools-file base-dir))))
-        (when (file-readable-p file)
-          (load file nil 'nomessage)))))
+(defun polymuse--load-tools ()
+  "Load project-specific tools from `polymuse-tools-file', if set."
+  (when polymuse-tools-file
+    (let* ((base-dir (or (and buffer-file-name
+                              (file-name-directory buffer-file-name))
+                         default-directory))
+           (file (if (file-name-absolute-p polymuse-tools-file)
+                     polymuse-tools-file
+                   (expand-file-name polymuse-tools-file base-dir))))
+      (when (file-readable-p file)
+        (load file nil 'nomessage)))))
 
-  (defun polymuse--default-profile ()
-    "Return the default profile based on current major mode and active modes."
-    (cond
-     ((and (bound-and-true-p canon-mode)
-           (derived-mode-p 'prog-mode))
-      'code-review)
-     ((bound-and-true-p canon-mode)
-      'prose-writing)
-     ((derived-mode-p 'prog-mode)
-      'code-review)
-     ((derived-mode-p 'text-mode)
-      'prose-writing)
-     (t 'prose-writing)))
+(defun polymuse--default-profile ()
+  "Return the default profile based on current major mode and active modes."
+  (cond
+   ((and (bound-and-true-p canon-mode)
+         (derived-mode-p 'prog-mode))
+    'code-review)
+   ((bound-and-true-p canon-mode)
+    'prose-writing)
+   ((derived-mode-p 'prog-mode)
+    'code-review)
+   ((derived-mode-p 'text-mode)
+    'prose-writing)
+   (t 'prose-writing)))
 
-  (defun polymuse--builtin-tools ()
-    "Return built-in tools based on active modes.
-
-Returns a list of `polymuse-tool' structs."
-    (let (tools)
-      ;; Canon mode provides entity lookup tools
-      (when (bound-and-true-p canon-mode)
-        (if (derived-mode-p 'prog-mode)
-            (setq tools (append tools (polymuse--canon-code-tools)))
-          (setq tools (append tools (polymuse--canon-prose-tools)))))
-      tools))
-
-  (defun polymuse--profile-tools (profile)
-    "Return tools for PROFILE.
+(defun polymuse--builtin-tools ()
+  "Return built-in tools based on active modes.
 
 Returns a list of `polymuse-tool' structs."
-    (let ((tool-names (alist-get profile polymuse-tool-profiles)))
-      ;; For now, profile tools are empty by default
-      ;; Users can add custom tools to profiles
-      (delq nil
-            (mapcar (lambda (name)
-                      (alist-get name polymuse-local-tools))
-                    tool-names))))
+  (let (tools)
+    ;; Canon mode provides entity lookup tools
+    (when (bound-and-true-p canon-mode)
+      (if (derived-mode-p 'prog-mode)
+          (setq tools (append tools (polymuse--canon-code-tools)))
+        (setq tools (append tools (polymuse--canon-prose-tools)))))
+    tools))
 
-  (defun polymuse--merge-tool-lists (&rest tool-lists)
-    "Merge TOOL-LISTS, with later lists taking precedence.
+(defun polymuse--profile-tools (profile)
+  "Return tools for PROFILE.
+
+Returns a list of `polymuse-tool' structs."
+  (let ((tool-names (alist-get profile polymuse-tool-profiles)))
+    ;; For now, profile tools are empty by default
+    ;; Users can add custom tools to profiles
+    (delq nil
+          (mapcar (lambda (name)
+                    (alist-get name polymuse-local-tools))
+                  tool-names))))
+
+(defun polymuse--merge-tool-lists (&rest tool-lists)
+  "Merge TOOL-LISTS, with later lists taking precedence.
 
 Tools are identified by their name. If multiple tools have the same
 name, the last one wins."
-    (let ((merged '()))
-      (dolist (tool-list tool-lists)
-        (dolist (tool tool-list)
-          (when (polymuse-tool-p tool)
-            (setf (alist-get (polymuse-tool-name tool) merged
-                             nil nil #'string=)
-                  tool))))
-      (mapcar #'cdr merged)))
+  (let ((merged '()))
+    (dolist (tool-list tool-lists)
+      (dolist (tool tool-list)
+        (when (polymuse-tool-p tool)
+          (setf (alist-get (polymuse-tool-name tool) merged
+                           nil nil #'string=)
+                tool))))
+    (mapcar #'cdr merged)))
 
-  (defun polymuse--collect-tools ()
-    "Collect tools from all layers: built-ins, profile, and local.
+(defun polymuse--collect-tools ()
+  "Collect tools from all layers: built-ins, profile, and local.
 
 Returns a list of `polymuse-tool' structs."
-    (let* ((builtin-tools (polymuse--builtin-tools))
-           (profile (or polymuse-active-profile
-                        (polymuse--default-profile)))
-           (profile-tools (polymuse--profile-tools profile))
-           (local-tools (mapcar #'cdr polymuse-local-tools)))
-      (polymuse--merge-tool-lists builtin-tools profile-tools local-tools)))
+  (let* ((builtin-tools (polymuse--builtin-tools))
+         (profile (or polymuse-active-profile
+                      (polymuse--default-profile)))
+         (profile-tools (polymuse--profile-tools profile))
+         (local-tools (mapcar #'cdr polymuse-local-tools)))
+    (polymuse--merge-tool-lists builtin-tools profile-tools local-tools)))
 
-  (defun polymuse--canon-prose-tools ()
-    "Return Polymuse tools for prose writing with canon-mode.
+(defun polymuse--canon-prose-tools ()
+  "Return Polymuse tools for prose writing with canon-mode.
 
 These tools allow the LLM to lookup characters, locations, and other
 entities, and suggest modifications without clobbering definitions."
-    (require 'canon)
-    (list
-     (make-polymuse-tool
-      :name "canon-lookup-entity"
-      :function #'canon-tool-lookup-entity
-      :description "Look up a character, location, or other entity from the story canon by ID. Returns the full entity definition."
-      :arguments '(entity-id))
-     (make-polymuse-tool
-      :name "canon-list-entities"
-      :function #'canon-tool-list-all-entities
-      :description "List all entities in the canon organized by type (Characters, Locations, etc). Useful for getting an overview."
-      :arguments '())
-     (make-polymuse-tool
-      :name "canon-search-by-property"
-      :function #'canon-tool-search-by-property
-      :description "Search for entities by property value. Example: find all characters with 'role=protagonist'. Returns matching entity IDs."
-      :arguments '(property value))
-     (make-polymuse-tool
-      :name "canon-suggest-update"
-      :function #'canon-tool-suggest-entity-update
-      :description "Suggest a modification to an entity (character, location, etc). The suggestion will be appended to the entity's 'Suggestions' section for the user to review. This does NOT modify the entity directly."
-      :arguments '(entity-id suggestion))))
+  (require 'canon)
+  (list
+   (make-polymuse-tool
+    :name "canon-lookup-entity"
+    :function #'canon-tool-lookup-entity
+    :description "Look up a character, location, or other entity from the story canon by ID. Returns the full entity definition."
+    :arguments '(entity-id))
+   (make-polymuse-tool
+    :name "canon-list-entities"
+    :function #'canon-tool-list-all-entities
+    :description "List all entities in the canon organized by type (Characters, Locations, etc). Useful for getting an overview."
+    :arguments '())
+   (make-polymuse-tool
+    :name "canon-search-by-property"
+    :function #'canon-tool-search-by-property
+    :description "Search for entities by property value. Example: find all characters with 'role=protagonist'. Returns matching entity IDs."
+    :arguments '(property value))
+   (make-polymuse-tool
+    :name "canon-suggest-update"
+    :function #'canon-tool-suggest-entity-update
+    :description "Suggest a modification to an entity (character, location, etc). The suggestion will be appended to the entity's 'Suggestions' section for the user to review. This does NOT modify the entity directly."
+    :arguments '(entity-id suggestion))))
 
-  (defun polymuse--canon-code-tools ()
-    "Return Polymuse tools for code review with canon-mode.
+(defun polymuse--canon-code-tools ()
+  "Return Polymuse tools for code review with canon-mode.
 
 These tools allow the LLM to access architecture docs, style guides, and
 suggest improvements without modifying the canon directly."
-    (require 'canon)
-    (list
-     (make-polymuse-tool
-      :name "canon-lookup-doc"
-      :function #'canon-tool-lookup-entity
-      :description "Look up a documentation entity from the canon by ID (e.g., 'architecture', 'style-guide', 'api-design'). Returns the full document."
-      :arguments '(doc-id))
-     (make-polymuse-tool
-      :name "canon-list-docs"
-      :function #'canon-tool-list-all-entities
-      :description "List all documentation entities in the canon (architecture, style guides, blueprints, etc)."
-      :arguments '())
-     (make-polymuse-tool
-      :name "canon-suggest-doc-update"
-      :function #'canon-tool-suggest-section-update
-      :description "Suggest an update to a specific section of a documentation entity. Use this to note inaccuracies or suggest improvements. The suggestion will be added to the 'Suggestions' section for user review. This does NOT modify the document directly."
-      :arguments '(doc-id section-name suggestion))))
+  (require 'canon)
+  (list
+   (make-polymuse-tool
+    :name "canon-lookup-doc"
+    :function #'canon-tool-lookup-entity
+    :description "Look up a documentation entity from the canon by ID (e.g., 'architecture', 'style-guide', 'api-design'). Returns the full document."
+    :arguments '(doc-id))
+   (make-polymuse-tool
+    :name "canon-list-docs"
+    :function #'canon-tool-list-all-entities
+    :description "List all documentation entities in the canon (architecture, style guides, blueprints, etc)."
+    :arguments '())
+   (make-polymuse-tool
+    :name "canon-suggest-doc-update"
+    :function #'canon-tool-suggest-section-update
+    :description "Suggest an update to a specific section of a documentation entity. Use this to note inaccuracies or suggest improvements. The suggestion will be added to the 'Suggestions' section for user review. This does NOT modify the document directly."
+    :arguments '(doc-id section-name suggestion))))
 
-  (defun polymuse--format-tools-prompt ()
-    "Format tools prompt for LLM from all tool sources."
-    (let ((tools (polymuse--collect-tools)))
-      (mapcar (lambda (tool)
-                `((tool-name        . ,(polymuse-tool-name tool))
-                  (tool-args        . ,(mapcar #'symbol-name (polymuse-tool-arguments tool)))
-                  (tool-description . ,(polymuse-tool-description tool))))
-              tools)))
+(defun polymuse--format-tools-prompt ()
+  "Format tools prompt for LLM from all tool sources."
+  (let ((tools (polymuse--collect-tools)))
+    (mapcar (lambda (tool)
+              `((tool-name        . ,(polymuse-tool-name tool))
+                (tool-args        . ,(mapcar #'symbol-name (polymuse-tool-arguments tool)))
+                (tool-description . ,(polymuse-tool-description tool))))
+            tools)))
 
-  (defun polymuse--calculate-context-regions (max-chars mode-prompt local-prompt current-unit)
-    "Calculate forward and backward context regions within budget.
+(defun polymuse--calculate-context-regions (max-chars mode-prompt local-prompt current-unit)
+  "Calculate forward and backward context regions within budget.
 
 MAX-CHARS is the total character budget.
 MODE-PROMPT and LOCAL-PROMPT are the base prompts.
 CURRENT-UNIT is the cons (BEG . END) of the current focus region.
 
 Returns a plist with :forward-context and :backward-context regions."
-    (let* ((prompt-size   (+ (length mode-prompt)
-                             (length local-prompt)
-                             80))
-           (current-len   (polymuse--region-length current-unit))
-           (context-space (max 0 (- max-chars prompt-size current-len)))
-           (forward-budget  (max 0 (floor context-space 2)))
-           (forward-context (and (> forward-budget 0)
-                                 (funcall polymuse--next-context-grabber
-                                          forward-budget
-                                          nil
-                                          (and current-unit (cdr current-unit)))))
-           (forward-len     (polymuse--region-length forward-context))
-           (backward-budget (max 0 (- context-space forward-len)))
-           (backward-context (and (> backward-budget 0)
-                                  (funcall polymuse--prev-context-grabber
-                                           backward-budget
-                                           nil
-                                           (and current-unit (car current-unit))))))
-      (list :forward-context forward-context
-            :backward-context backward-context)))
+  (let* ((prompt-size   (+ (length mode-prompt)
+                           (length local-prompt)
+                           80))
+         (current-len   (polymuse--region-length current-unit))
+         (context-space (max 0 (- max-chars prompt-size current-len)))
+         (forward-budget  (max 0 (floor context-space 2)))
+         (forward-context (and (> forward-budget 0)
+                               (funcall polymuse--next-context-grabber
+                                        forward-budget
+                                        nil
+                                        (and current-unit (cdr current-unit)))))
+         (forward-len     (polymuse--region-length forward-context))
+         (backward-budget (max 0 (- context-space forward-len)))
+         (backward-context (and (> backward-budget 0)
+                                (funcall polymuse--prev-context-grabber
+                                         backward-budget
+                                         nil
+                                         (and current-unit (car current-unit))))))
+    (list :forward-context forward-context
+          :backward-context backward-context)))
 
-  (defun polymuse--compose-prompt (review)
-    "Generate the full prompt for REVIEW, for use with the PolyMuse backend LLM."
-    (let* ((mode-prompt   (or (polymuse-get-mode-prompt) ""))
-           (local-prompt  (or (polymuse-review-state-instructions review) ""))
-           (max-chars     (or polymuse-max-prompt-characters most-positive-fixnum))
-           (tools-prompt  (polymuse--format-tools-prompt))
-           (current-unit  (funcall polymuse--unit-grabber))
-           (context-regions (polymuse--calculate-context-regions
-                             max-chars mode-prompt local-prompt current-unit))
-           (forward-context  (plist-get context-regions :forward-context))
-           (backward-context (plist-get context-regions :backward-context))
-           (out-buffer            (polymuse-review-state-output-buffer review))
-           (existing-review-lines (polymuse-review-state-review-context review))
-           (existing-review       (polymuse--grab-buffer-tail out-buffer existing-review-lines)))
-      `((review-request
-         . ((mode-prompt       . ,mode-prompt)
-            (buffer-prompt     . ,local-prompt)
-            ,@(when tools-prompt
-                (list `(tools . ((instructions
-                                  . ,(string-join '("You may call a tool for more information instead of replying directly."
-                                                    "If you want more information, reply ONLY with a JSON request of the form:"
-                                                    "`{"
-                                                    "\"action\":\"tool-call\","
-                                                    "\"tool\":\"<tool-name>\","
-                                                    "\"arguments\": {"
-                                                    "\"arg0\": \"<value>\","
-                                                    "\"arg1\": \"<value>\""
-                                                    "}"
-                                                    "}`"
-                                                    "The result of the tool call will be added to the request and"
-                                                    "the resulting request will be passed back to you.")
-                                                  " "))
-                                 (tool-list . ,tools-prompt)))))))
-        (environment
-         . ((editor     . "emacs")
-            (major_mode . ,(symbol-name major-mode))))
-        (context
-         . ((backward-context . ,(polymuse--region-string backward-context))
-            (forward-context  . ,(polymuse--region-string forward-context))
-            (existing-review  . ,existing-review)))
-        (current
-         . ((focus-region . ,(polymuse--region-string current-unit))))
-        (task
-         . ((focus   . "Prioritize the text in the `current.focus-region' field.")
-            (details . ,(string-join '("Analyze and provide feedback based primarily on"
-                                       "the current editing focus-region, using the earlier"
-                                       "and later context for reference.")
-                                     " "))
-            ,@(when polymuse-final-instructions
-                (list `(instructions . ,polymuse-final-instructions))))))))
+(defun polymuse--compose-prompt (review)
+  "Generate the full prompt for REVIEW, for use with the PolyMuse backend LLM."
+  (let* ((mode-prompt   (or (polymuse-get-mode-prompt) ""))
+         (local-prompt  (or (polymuse-review-state-instructions review) ""))
+         (max-chars     (or polymuse-max-prompt-characters most-positive-fixnum))
+         (tools-prompt  (polymuse--format-tools-prompt))
+         (current-unit  (funcall polymuse--unit-grabber))
+         (context-regions (polymuse--calculate-context-regions
+                           max-chars mode-prompt local-prompt current-unit))
+         (forward-context  (plist-get context-regions :forward-context))
+         (backward-context (plist-get context-regions :backward-context))
+         (out-buffer            (polymuse-review-state-output-buffer review))
+         (existing-review-lines (polymuse-review-state-review-context review))
+         (existing-review       (polymuse--grab-buffer-tail out-buffer existing-review-lines)))
+    `((review-request
+       . ((mode-prompt       . ,mode-prompt)
+          (buffer-prompt     . ,local-prompt)
+          ,@(when tools-prompt
+              (list `(tools . ((instructions
+                                . ,(string-join '("You may call a tool for more information instead of replying directly."
+                                                  "If you want more information, reply ONLY with a JSON request of the form:"
+                                                  "`{"
+                                                  "\"action\":\"tool-call\","
+                                                  "\"tool\":\"<tool-name>\","
+                                                  "\"arguments\": {"
+                                                  "\"arg0\": \"<value>\","
+                                                  "\"arg1\": \"<value>\""
+                                                  "}"
+                                                  "}`"
+                                                  "The result of the tool call will be added to the request and"
+                                                  "the resulting request will be passed back to you.")
+                                                " "))
+                               (tool-list . ,tools-prompt)))))))
+      (environment
+       . ((editor     . "emacs")
+          (major_mode . ,(symbol-name major-mode))))
+      (context
+       . ((backward-context . ,(polymuse--region-string backward-context))
+          (forward-context  . ,(polymuse--region-string forward-context))
+          (existing-review  . ,existing-review)))
+      (current
+       . ((focus-region . ,(polymuse--region-string current-unit))))
+      (task
+       . ((focus   . "Prioritize the text in the `current.focus-region' field.")
+          (details . ,(string-join '("Analyze and provide feedback based primarily on"
+                                     "the current editing focus-region, using the earlier"
+                                     "and later context for reference.")
+                                   " "))
+          ,@(when polymuse-final-instructions
+              (list `(instructions . ,polymuse-final-instructions))))))))
 
-  (defun polymuse--reviewed-buffer-p (&optional buffer)
-    "Return t if a BUFFER is a buffer under review."
-    (with-current-buffer (or buffer (current-buffer))
-      (bound-and-true-p polymuse-mode)))
+(defun polymuse--reviewed-buffer-p (&optional buffer)
+  "Return t if a BUFFER is a buffer under review."
+  (with-current-buffer (or buffer (current-buffer))
+    (bound-and-true-p polymuse-mode)))
 
-  (defun polymuse--review-output-buffer-p (&optional buffer)
-    "Return t if a BUFFER is the output buffer of a Polymuse review."
-    (with-current-buffer (or buffer (current-buffer))
-      (eq major-mode 'polymuse-suggestions-mode)))
+(defun polymuse--review-output-buffer-p (&optional buffer)
+  "Return t if a BUFFER is the output buffer of a Polymuse review."
+  (with-current-buffer (or buffer (current-buffer))
+    (eq major-mode 'polymuse-suggestions-mode)))
 
-  (defun polymuse--erase-buffer (buffer)
-    "Clear the contents of BUFFER."
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer))))
+(defun polymuse--erase-buffer (buffer)
+  "Clear the contents of BUFFER."
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t))
+      (erase-buffer))))
 
-  (defun polymuse--select-review (buffer)
-    "Given a BUFFER under review, interactively select and return the ID of a review."
-    (with-current-buffer buffer
-      (if (polymuse--review-output-buffer-p buffer)
-          polymuse--buffer-review-state
-        (let ((reviews polymuse--reviews))
-          (pcase (length reviews)
-            (0 (user-error "No reviewers configured for this buffer"))
-            (1 (car reviews))
-            (_ (let* ((choices   (mapcar (lambda (state)
-                                           (cons (polymuse-review-state-id state) state))
-                                         reviews))
-                      (review-id (completing-read "Edit instructions for reviewer: "
-                                                  (mapcar #'car choices) nil t)))
-                 (cdr (assoc review-id choices)))))))))
+(defun polymuse--select-review (buffer)
+  "Given a BUFFER under review, interactively select and return the ID of a review."
+  (with-current-buffer buffer
+    (if (polymuse--review-output-buffer-p buffer)
+        polymuse--buffer-review-state
+      (let ((reviews polymuse--reviews))
+        (pcase (length reviews)
+          (0 (user-error "No reviewers configured for this buffer"))
+          (1 (car reviews))
+          (_ (let* ((choices   (mapcar (lambda (state)
+                                         (cons (polymuse-review-state-id state) state))
+                                       reviews))
+                    (review-id (completing-read "Edit instructions for reviewer: "
+                                                (mapcar #'car choices) nil t)))
+               (cdr (assoc review-id choices)))))))))
 
-  (defun polymuse-reset-output (&optional buffer)
-    "Reset the review output of BUFFER. Query for review if there's more than one."
-    (interactive)
-    (let* ((buff (or buffer (current-buffer)))
-           (review (polymuse--select-review buff)))
-      (polymuse--erase-buffer (polymuse-review-state-output-buffer review))))
+(defun polymuse-reset-output (&optional buffer)
+  "Reset the review output of BUFFER. Query for review if there's more than one."
+  (interactive)
+  (let* ((buff (or buffer (current-buffer)))
+         (review (polymuse--select-review buff)))
+    (polymuse--erase-buffer (polymuse-review-state-output-buffer review))))
 
-  (defun polymuse-run-review (&optional buffer)
-    "Select and run a Polymuse review on BUFFER."
-    (interactive)
-    (let* ((buf (or buffer (current-buffer)))
-           (review (polymuse--select-review buf))
-           (target (polymuse-review-state-source-buffer review)))
-      (polymuse--run-review target review)))
+(defun polymuse-run-review (&optional buffer)
+  "Select and run a Polymuse review on BUFFER."
+  (interactive)
+  (let* ((buf (or buffer (current-buffer)))
+         (review (polymuse--select-review buf))
+         (target (polymuse-review-state-source-buffer review)))
+    (polymuse--run-review target review)))
 
-  (defun polymuse--open-review (review)
-    "Open Polymuse REVIEW in a window."
-    (pop-to-buffer (polymuse-review-state-output-buffer review)))
+(defun polymuse--open-review (review)
+  "Open Polymuse REVIEW in a window."
+  (pop-to-buffer (polymuse-review-state-output-buffer review)))
 
-  (defun polymuse-open-review ()
-    "Open Polymuse review in a window. If there's more than one, open selector."
-    (interactive)
-    (let* ((buf (current-buffer))
-           (review (polymuse--select-review buf)))
-      (polymuse--open-review review)))
+(defun polymuse-open-review ()
+  "Open Polymuse review in a window. If there's more than one, open selector."
+  (interactive)
+  (let* ((buf (current-buffer))
+         (review (polymuse--select-review buf)))
+    (polymuse--open-review review)))
 
-  (defun polymuse-edit-instructions ()
-    "Edit the buffer-specific instructions for Polymuse reviewer.
+(defun polymuse-edit-instructions ()
+  "Edit the buffer-specific instructions for Polymuse reviewer.
 
   If called from a buffer under review, look at `polymuse-reviews':
   - If there's exactly one review, edit that one.
   - If there are more than one, prompt the user to select which to edit."
-    (interactive)
-    (let* ((buf (current-buffer))
-           (review (polymuse--select-review buf)))
-      (polymuse--edit-review-instructions review)))
+  (interactive)
+  (let* ((buf (current-buffer))
+         (review (polymuse--select-review buf)))
+    (polymuse--edit-review-instructions review)))
 
-  (defvar-local polymuse--buffer-review-state nil
-    "The `polymuse-review-state' struct associated with a review buffer.")
+(defvar-local polymuse--buffer-review-state nil
+  "The `polymuse-review-state' struct associated with a review buffer.")
 
-  (defun polymuse--edit-review-instructions (review)
-    "Given a `polymuse-review-state' REVIEW, let the user modify and save the review instructions."
-    (let ((buf (get-buffer-create (format "*polymuse prompt:%s*"
-                                          (polymuse-review-state-id review))))
-          (instructions (or (polymuse-review-state-instructions review) "")))
-      (with-current-buffer buf
-        (erase-buffer)
-        (polymuse-instructions-mode)
-        (insert instructions)
-        (goto-char (point-min))
-        (setq-local polymuse--buffer-review-state review))
-      (pop-to-buffer buf)))
+(defun polymuse--edit-review-instructions (review)
+  "Given a `polymuse-review-state' REVIEW, let the user modify and save the review instructions."
+  (let ((buf (get-buffer-create (format "*polymuse prompt:%s*"
+                                        (polymuse-review-state-id review))))
+        (instructions (or (polymuse-review-state-instructions review) "")))
+    (with-current-buffer buf
+      (erase-buffer)
+      (polymuse-instructions-mode)
+      (insert instructions)
+      (goto-char (point-min))
+      (setq-local polymuse--buffer-review-state review))
+    (pop-to-buffer buf)))
 
-  (defun polymuse-save-instructions ()
-    "Save an edited reviewer prompt to the associated `polymuse-review-state' struct."
-    (interactive)
-    (unless (eq major-mode 'polymuse-instructions-mode)
-      (user-error "This command must be called from a polymuse instructions buffer"))
-    (let* ((state        (buffer-local-value 'polymuse--buffer-review-state (current-buffer)))
-           (reviewer-id  (polymuse-review-state-id state))
-           (instructions (buffer-substring-no-properties (point-min) (point-max))))
-      (setf (polymuse-review-state-instructions state) instructions)
-      (quit-window 'kill)
-      (message "Local prompt for reviewer %s updated." reviewer-id)))
+(defun polymuse-save-instructions ()
+  "Save an edited reviewer prompt to the associated `polymuse-review-state' struct."
+  (interactive)
+  (unless (eq major-mode 'polymuse-instructions-mode)
+    (user-error "This command must be called from a polymuse instructions buffer"))
+  (let* ((state        (buffer-local-value 'polymuse--buffer-review-state (current-buffer)))
+         (reviewer-id  (polymuse-review-state-id state))
+         (instructions (buffer-substring-no-properties (point-min) (point-max))))
+    (setf (polymuse-review-state-instructions state) instructions)
+    (quit-window 'kill)
+    (message "Local prompt for reviewer %s updated." reviewer-id)))
 
-  (defun polymuse-close-instructions ()
-    "Close an edited reviewer prompt without saving."
-    (interactive)
-    (unless (eq major-mode 'polymuse-instructions-mode)
-      (user-error "This command must be called from a polymuse instructions buffer"))
-    (quit-window 'kill))
+(defun polymuse-close-instructions ()
+  "Close an edited reviewer prompt without saving."
+  (interactive)
+  (unless (eq major-mode 'polymuse-instructions-mode)
+    (user-error "This command must be called from a polymuse instructions buffer"))
+  (quit-window 'kill))
 
-  (define-derived-mode polymuse-suggestions-mode markdown-mode " Review"
-    "Mode for displaying AI suggestions from Polymuse."
-    (setq-local truncate-lines nil)
-    (visual-line-mode 1))
+(define-derived-mode polymuse-suggestions-mode markdown-mode " Review"
+  "Mode for displaying AI suggestions from Polymuse."
+  (setq-local truncate-lines nil)
+  (visual-line-mode 1))
 
-  (define-key polymuse-suggestions-mode-map
-              (kbd "C-c C-r e") #'polymuse-edit-instructions)
-  (define-key polymuse-suggestions-mode-map
-              (kbd "C-c C-r t") #'polymuse-reset-output)
+(define-key polymuse-suggestions-mode-map
+            (kbd "C-c C-r e") #'polymuse-edit-instructions)
+(define-key polymuse-suggestions-mode-map
+            (kbd "C-c C-r t") #'polymuse-reset-output)
 
-  (define-derived-mode polymuse-instructions-mode markdown-mode " Prompt"
-    "Mode for editing AI instruction prompt for Polymuse reviewer.")
+(define-derived-mode polymuse-instructions-mode markdown-mode " Prompt"
+  "Mode for editing AI instruction prompt for Polymuse reviewer.")
 
-  (define-key polymuse-instructions-mode-map
-              (kbd "C-c C-c") #'polymuse-save-instructions)
-  (define-key polymuse-instructions-mode-map
-              (kbd "C-c C-d") #'polymuse-close-instructions)
+(define-key polymuse-instructions-mode-map
+            (kbd "C-c C-c") #'polymuse-save-instructions)
+(define-key polymuse-instructions-mode-map
+            (kbd "C-c C-d") #'polymuse-close-instructions)
 
-  (defcustom polymuse-default-interval 60
-    "Default idle time (in seconds) between Polymuse reviews."
-    :type 'number)
+(defcustom polymuse-default-interval 60
+  "Default idle time (in seconds) between Polymuse reviews."
+  :type 'number)
 
-  (defun polymuse--update-activity-time ()
-    "Update the last activity timestamp for the current buffer."
-    (setq polymuse--last-activity-time (float-time)))
+(defun polymuse--update-activity-time ()
+  "Update the last activity timestamp for the current buffer."
+  (setq polymuse--last-activity-time (float-time)))
 
-  (defun polymuse--enable ()
-    "Enable the Polymuse LLM live review mode."
-    (unless polymuse--timer
-      (setq polymuse--timer
-            (run-with-timer polymuse-default-interval ;; How long to wait before the first review
-                            polymuse-default-interval ;; How long to pause between reviews
-                            #'polymuse--global-idle-tick)))
-    (if (polymuse--code-mode-p)
-        (setq polymuse--unit-grabber #'polymuse--get-unit-sexp
-              polymuse--prev-context-grabber #'polymuse--get-context-before-point-sexps
-              polymuse--next-context-grabber #'polymuse--get-context-after-point-sexps)
-      (setq polymuse--unit-grabber #'polymuse--get-unit-paragraph
-            polymuse--prev-context-grabber #'polymuse--get-context-before-point-paragraphs
-            polymuse--next-context-grabber #'polymuse--get-context-after-point-paragraphs))
-    ;; Track buffer activity for intelligent review scheduling
-    (polymuse--update-activity-time)
-    (add-hook 'after-change-functions
-              (lambda (&rest _) (polymuse--update-activity-time))
-              nil t)
-    (polymuse--load-tools))
+(defun polymuse--enable ()
+  "Enable the Polymuse LLM live review mode."
+  (unless polymuse--timer
+    (setq polymuse--timer
+          (run-with-timer polymuse-default-interval ;; How long to wait before the first review
+                          polymuse-default-interval ;; How long to pause between reviews
+                          #'polymuse--global-idle-tick)))
+  (if (polymuse--code-mode-p)
+      (setq polymuse--unit-grabber #'polymuse--get-unit-sexp
+            polymuse--prev-context-grabber #'polymuse--get-context-before-point-sexps
+            polymuse--next-context-grabber #'polymuse--get-context-after-point-sexps)
+    (setq polymuse--unit-grabber #'polymuse--get-unit-paragraph
+          polymuse--prev-context-grabber #'polymuse--get-context-before-point-paragraphs
+          polymuse--next-context-grabber #'polymuse--get-context-after-point-paragraphs))
+  ;; Track buffer activity for intelligent review scheduling
+  (polymuse--update-activity-time)
+  (add-hook 'after-change-functions
+            (lambda (&rest _) (polymuse--update-activity-time))
+            nil t)
+  (polymuse--load-tools))
 
-  (defun polymuse--disable ()
-    "Disable the Polymuse LLM live review mode."
-    (when (and polymuse--timer
-               (not (cl-some (lambda (b) (with-current-buffer b polymuse-mode))
-                             (buffer-list))))
-      (cancel-timer polymuse--timer)
-      (setq polymuse--timer nil)))
+(defun polymuse--disable ()
+  "Disable the Polymuse LLM live review mode."
+  (when (and polymuse--timer
+             (not (cl-some (lambda (b) (with-current-buffer b polymuse-mode))
+                           (buffer-list))))
+    (cancel-timer polymuse--timer)
+    (setq polymuse--timer nil)))
 
-  (defun polymuse--buffer-hash ()
-    "Generate a hash for the current buffer, to detect differences."
-    (secure-hash 'sha1 (current-buffer)))
+(defun polymuse--buffer-hash ()
+  "Generate a hash for the current buffer, to detect differences."
+  (secure-hash 'sha1 (current-buffer)))
 
-  (defun polymuse--display-review (review response)
-    "Display the review in RESPONSE according to the state in REVIEW."
-    (let ((outbuf (polymuse-review-state-output-buffer review)))
-      (if (not (buffer-live-p outbuf))
-          (error "Output buffer %s for review %s is not live"
-                 outbuf (polymuse-review-state-id review))
-        (with-current-buffer outbuf
-          (let ((inhibit-read-only t)
-                (full-response (concat "\n\n>>> "
-                                       (format-time-string "%H:%M:%S")
-                                       "\n\n"
-                                       response)))
-            (polymuse-suggestions-mode)
-            (polymuse--truncate-buffer-to-length
-             (current-buffer)
-             (polymuse-review-state-buffer-size-limit review))
-            (typewrite-enqueue-job full-response outbuf
-                                   :inhibit-read-only t
-                                   :follow t
-                                   :cps 45))))))
+(defun polymuse--display-review (review response)
+  "Display the review in RESPONSE according to the state in REVIEW."
+  (let ((outbuf (polymuse-review-state-output-buffer review)))
+    (if (not (buffer-live-p outbuf))
+        (error "Output buffer %s for review %s is not live"
+               outbuf (polymuse-review-state-id review))
+      (with-current-buffer outbuf
+        (let ((inhibit-read-only t)
+              (full-response (concat "\n\n>>> "
+                                     (format-time-string "%H:%M:%S")
+                                     "\n\n"
+                                     response)))
+          (polymuse-suggestions-mode)
+          (polymuse--truncate-buffer-to-length
+           (current-buffer)
+           (polymuse-review-state-buffer-size-limit review))
+          (typewrite-enqueue-job full-response outbuf
+                                 :inhibit-read-only t
+                                 :follow t
+                                 :cps 45))))))
 
-  (defun polymuse--kill-reviewer (buffer review)
-    "Remove a REVIEW from BUFFER, and delete its output buffer."
-    (with-current-buffer buffer
-      (unless (and (boundp 'polymuse--reviews)
-                   polymuse--reviews)
-        (user-error "No active Polymuse reviewers configured for this buffer"))
-      (kill-buffer (polymuse-review-state-output-buffer review))
-      (setq polymuse--reviews
-            (cl-remove (polymuse-review-state-id review)
-                       polymuse--reviews
-                       :key  #'polymuse-review-state-id
-                       :test #'string=))))
+(defun polymuse--kill-reviewer (buffer review)
+  "Remove a REVIEW from BUFFER, and delete its output buffer."
+  (with-current-buffer buffer
+    (unless (and (boundp 'polymuse--reviews)
+                 polymuse--reviews)
+      (user-error "No active Polymuse reviewers configured for this buffer"))
+    (kill-buffer (polymuse-review-state-output-buffer review))
+    (setq polymuse--reviews
+          (cl-remove (polymuse-review-state-id review)
+                     polymuse--reviews
+                     :key  #'polymuse-review-state-id
+                     :test #'string=))))
 
-  (defun polymuse-kill-all-reviewers (&optional buffer)
-    "Remove all reviewers from BUFFER, and delete their output buffers."
-    (interactive)
-    (with-current-buffer (or buffer (current-buffer))
-      (unless (and (boundp 'polymuse--reviews)
-                   polymuse--reviews)
-        (user-error "No active Polymuse reviewers configured for this buffer"))
-      (dolist (review polymuse--reviews)
-        (kill-buffer (polymuse-review-state-output-buffer review)))
-      (setq polymuse--reviews '())
-      (message "Killed all polymuse reviewers.")))
+(defun polymuse-kill-all-reviewers (&optional buffer)
+  "Remove all reviewers from BUFFER, and delete their output buffers."
+  (interactive)
+  (with-current-buffer (or buffer (current-buffer))
+    (unless (and (boundp 'polymuse--reviews)
+                 polymuse--reviews)
+      (user-error "No active Polymuse reviewers configured for this buffer"))
+    (dolist (review polymuse--reviews)
+      (kill-buffer (polymuse-review-state-output-buffer review)))
+    (setq polymuse--reviews '())
+    (message "Killed all polymuse reviewers.")))
 
-  (defun polymuse-kill-reviewer (&optional buffer)
-    "Select and kill a reviewer associated with BUFFER."
-    (interactive)
-    (let* ((buf (or buffer (current-buffer)))
-           (review (polymuse--select-review buf))
-           (parent (polymuse-review-state-source-buffer review)))
-      (polymuse--kill-reviewer parent review)
-      (message "Killed polymuse reviewer: %s" (polymuse-review-state-id review))))
+(defun polymuse-kill-reviewer (&optional buffer)
+  "Select and kill a reviewer associated with BUFFER."
+  (interactive)
+  (let* ((buf (or buffer (current-buffer)))
+         (review (polymuse--select-review buf))
+         (parent (polymuse-review-state-source-buffer review)))
+    (polymuse--kill-reviewer parent review)
+    (message "Killed polymuse reviewer: %s" (polymuse-review-state-id review))))
 
-  (cl-defun polymuse-add-reviewer
-      (&key id
-            backend
-            instructions
-            (interval polymuse-default-interval)
-            (buffer-size-limit polymuse-default-buffer-size-limit)
-            (review-context polymuse-default-review-context-lines)
-            out-buffer)
-    "Create a new Polymuse review buffer for the current buffer.
+(cl-defun polymuse-add-reviewer
+    (&key id
+          backend
+          instructions
+          (interval polymuse-default-interval)
+          (buffer-size-limit polymuse-default-buffer-size-limit)
+          (review-context polymuse-default-review-context-lines)
+          out-buffer)
+  "Create a new Polymuse review buffer for the current buffer.
 
   ID is the identifier for this review, and will be generated if not provided.
   BACKEND is the backend (LLM) to which requests will be sent for review.
@@ -1295,47 +1295,47 @@ Returns a plist with :forward-context and :backward-context regions."
     created if none is provided.
   REVIEW-CONTEXT is the number of lines of earlier review to include in the
     prompt."
-    (interactive)
-    (let* ((id (or id (format "polymuse-%s-%d" (buffer-name) (float-time))))
-           (backend (or backend (polymuse-find-backend (polymuse--interactive-setup-backend))))
-           (suggestions-buf (or out-buffer
-                                (generate-new-buffer (format "*polymuse:%s*" id))))
-           (local-instructions (or instructions
-                                   (read-string "Review instructions (empty for none): ")))
-           (state (make-polymuse-review-state
-                   :id                 id
-                   :interval           interval
-                   :last-run-time      nil
-                   :last-hash          nil
-                   :buffer-size-limit  buffer-size-limit
-                   :output-buffer      suggestions-buf
-                   :instructions       (unless (string-empty-p local-instructions)
-                                         local-instructions)
-                   :backend            backend
-                   :review-context     review-context
-                   :source-buffer      (current-buffer)
-                   :status             'idle
-                   :request-started-time nil)))
-      (push state polymuse--reviews)
-      (polymuse--enable)
-      (message "Polymuse review %s created with backend %s; suggestions in %s"
-               id (polymuse-backend-id backend) (buffer-name suggestions-buf))
-      (display-buffer suggestions-buf
-                      '((display-buffer-in-side-window)
-                        (side . right)
-                        (slot . 0)
-                        (window-width . 0.33)))
-      (polymuse--run-review (current-buffer) state)
-      state))
+  (interactive)
+  (let* ((id (or id (format "polymuse-%s-%d" (buffer-name) (float-time))))
+         (backend (or backend (polymuse-find-backend (polymuse--interactive-setup-backend))))
+         (suggestions-buf (or out-buffer
+                              (generate-new-buffer (format "*polymuse:%s*" id))))
+         (local-instructions (or instructions
+                                 (read-string "Review instructions (empty for none): ")))
+         (state (make-polymuse-review-state
+                 :id                 id
+                 :interval           interval
+                 :last-run-time      nil
+                 :last-hash          nil
+                 :buffer-size-limit  buffer-size-limit
+                 :output-buffer      suggestions-buf
+                 :instructions       (unless (string-empty-p local-instructions)
+                                       local-instructions)
+                 :backend            backend
+                 :review-context     review-context
+                 :source-buffer      (current-buffer)
+                 :status             'idle
+                 :request-started-time nil)))
+    (push state polymuse--reviews)
+    (polymuse--enable)
+    (message "Polymuse review %s created with backend %s; suggestions in %s"
+             id (polymuse-backend-id backend) (buffer-name suggestions-buf))
+    (display-buffer suggestions-buf
+                    '((display-buffer-in-side-window)
+                      (side . right)
+                      (slot . 0)
+                      (window-width . 0.33)))
+    (polymuse--run-review (current-buffer) state)
+    state))
 
-  (cl-defun polymuse-add-default-reviewer
-      (&key id
-            instructions
-            (interval polymuse-default-interval)
-            (buffer-size-limit polymuse-default-buffer-size-limit)
-            (review-context polymuse-default-review-context-lines)
-            out-buffer)
-    "Create a new Polymuse review buffer for the current buffer.
+(cl-defun polymuse-add-default-reviewer
+    (&key id
+          instructions
+          (interval polymuse-default-interval)
+          (buffer-size-limit polymuse-default-buffer-size-limit)
+          (review-context polymuse-default-review-context-lines)
+          out-buffer)
+  "Create a new Polymuse review buffer for the current buffer.
 
 ID is the identifier for this review, and will be generated if not provided.
 BACKEND is the backend (LLM) to which requests will be sent for review.
@@ -1348,38 +1348,38 @@ OUT-BUFFER is the buffer where reviews will be posted. A new buffer will be
   created if none is provided.
 REVIEW-CONTEXT is the number of lines of earlier review to include in the
   prompt."
-    (interactive)
-    (let* ((id (or id (format "polymuse-%s-%d" (buffer-name) (float-time))))
-           (backend (polymuse-ensure-backend))
-           (suggestions-buf (or out-buffer
-                                (generate-new-buffer (format "*polymuse:%s*" id))))
-           (local-instructions (or instructions
-                                   (read-string "Review instructions (empty for none): ")))
-           (state (make-polymuse-review-state
-                   :id                 id
-                   :interval           interval
-                   :last-run-time      nil
-                   :last-hash          nil
-                   :buffer-size-limit  buffer-size-limit
-                   :output-buffer      suggestions-buf
-                   :instructions       (unless (string-empty-p local-instructions)
-                                         local-instructions)
-                   :backend            backend
-                   :review-context     review-context
-                   :source-buffer      (current-buffer)
-                   :status             'idle
-                   :request-started-time nil)))
-      (push state polymuse--reviews)
-      (polymuse--enable)
-      (message "Polymuse review %s created with backend %s; suggestions in %s"
-               id (polymuse-backend-id backend) (buffer-name suggestions-buf))
-      (display-buffer suggestions-buf
-                      '((display-buffer-in-side-window)
-                        (side . right)
-                        (slot . 0)
-                        (window-width . 0.33)))
-      (polymuse--run-review (current-buffer) state)
-      state))
+  (interactive)
+  (let* ((id (or id (format "polymuse-%s-%d" (buffer-name) (float-time))))
+         (backend (polymuse-ensure-backend))
+         (suggestions-buf (or out-buffer
+                              (generate-new-buffer (format "*polymuse:%s*" id))))
+         (local-instructions (or instructions
+                                 (read-string "Review instructions (empty for none): ")))
+         (state (make-polymuse-review-state
+                 :id                 id
+                 :interval           interval
+                 :last-run-time      nil
+                 :last-hash          nil
+                 :buffer-size-limit  buffer-size-limit
+                 :output-buffer      suggestions-buf
+                 :instructions       (unless (string-empty-p local-instructions)
+                                       local-instructions)
+                 :backend            backend
+                 :review-context     review-context
+                 :source-buffer      (current-buffer)
+                 :status             'idle
+                 :request-started-time nil)))
+    (push state polymuse--reviews)
+    (polymuse--enable)
+    (message "Polymuse review %s created with backend %s; suggestions in %s"
+             id (polymuse-backend-id backend) (buffer-name suggestions-buf))
+    (display-buffer suggestions-buf
+                    '((display-buffer-in-side-window)
+                      (side . right)
+                      (slot . 0)
+                      (window-width . 0.33)))
+    (polymuse--run-review (current-buffer) state)
+    state))
 
-  (provide 'polymuse)
+(provide 'polymuse)
 ;;; polymuse.el ends here
