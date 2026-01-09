@@ -121,8 +121,33 @@
 When the buffer grows larger than this, the beginning will be truncated."
   :type 'integer)
 
+(defcustom polymuse-require-buffer-visible t
+  "Only review buffers visible in a window.
+
+When non-nil, reviews will only run for buffers that are currently
+visible in at least one window."
+  :type 'boolean)
+
+(defcustom polymuse-review-timeout 300
+  "Maximum seconds before marking a review as stale.
+
+If a review request takes longer than this, it will be reset to idle
+status so new reviews can be requested. Default is 5 minutes (300 seconds)."
+  :type 'integer)
+
+(defcustom polymuse-buffer-activity-timeout 60
+  "Maximum seconds of inactivity before pausing reviews.
+
+Reviews will only run if the buffer was active since the last review,
+or was active within this many seconds. This prevents generating reviews
+when the user is away from their desk. Default is 60 seconds."
+  :type 'integer)
+
 (defvar polymuse--timer nil
   "Driver timer for active Polymuse reviewers.")
+
+(defvar-local polymuse--last-activity-time nil
+  "Timestamp of the last buffer activity (for tracking user presence).")
 
 (defcustom polymuse-debug nil
   "Enable Polymuse debug mode."
@@ -332,7 +357,9 @@ If the server is unreachable, you may experience UI freezing."
   instructions      ;; special instructions for this reviewer
   backend           ;; backend to which requests will be sent
   review-context    ;; lines of review context to include
-  source-buffer)    ;; The buffer under review
+  source-buffer     ;; The buffer under review
+  status            ;; 'idle | 'running - tracks whether review is in progress
+  request-started-time) ;; timestamp when current request was initiated
 
 (define-error 'polymuse-json-error "Polymuse JSON parse error")
 
@@ -705,28 +732,88 @@ active minor modes.")
         (if (and old-hash (string= old-hash new-hash))
             (when polymuse-debug (message "skipping review, buffer is unchanged"))
           (let ((prompt (polymuse--compose-prompt review)))
+            ;; Mark review as running BEFORE making the request
+            (setf (polymuse-review-state-status review) 'running)
+            (setf (polymuse-review-state-request-started-time review) (float-time))
             (setf (polymuse-review-state-last-run-time review) (float-time))
             (setf (polymuse-review-state-last-hash review) new-hash)
             (polymuse-request-review backend
                                      prompt
                                      :system   polymuse-system-prompt
-                                     :callback (lambda (response _)
-                                                 (polymuse--handle-llm-response review response)))))))))
+                                     :callback (lambda (response info)
+                                                 ;; Always reset status to idle when request completes
+                                                 (unwind-protect
+                                                     (polymuse--handle-llm-response review response)
+                                                   (setf (polymuse-review-state-status review) 'idle)
+                                                   (setf (polymuse-review-state-request-started-time review) nil))))))))))
+
+(defun polymuse--buffer-recently-active-p (buffer review-state)
+  "Return t if BUFFER was recently active.
+
+A buffer is considered recently active if it was modified since the last
+review, or if it was modified within `polymuse-buffer-activity-timeout' seconds."
+  (let* ((last-activity (buffer-local-value 'polymuse--last-activity-time buffer))
+         (last-review (polymuse-review-state-last-run-time review-state))
+         (now (float-time)))
+    (or (not last-activity)  ;; No activity recorded yet, allow review
+        (and last-review (> last-activity last-review))  ;; Active since last review
+        (< (- now last-activity) polymuse-buffer-activity-timeout))))  ;; Recently active
+
+(defun polymuse--review-stale-p (review-state)
+  "Return t if REVIEW-STATE represents a stale (timed-out) review request."
+  (let ((status (polymuse-review-state-status review-state))
+        (started (polymuse-review-state-request-started-time review-state))
+        (now (float-time)))
+    (and (eq status 'running)
+         started
+         (> (- now started) polymuse-review-timeout))))
+
+(defun polymuse--should-review-p (buffer review-state)
+  "Return t if BUFFER with REVIEW-STATE should be reviewed now."
+  (let ((status (polymuse-review-state-status review-state)))
+    (and
+     ;; Buffer must be visible in some window (if configured)
+     (or (not polymuse-require-buffer-visible)
+         (get-buffer-window buffer 'visible))
+     ;; Buffer must be recently active
+     (polymuse--buffer-recently-active-p buffer review-state)
+     ;; Review must not already be running, or must be stale
+     (or (not (eq status 'running))
+         (polymuse--review-stale-p review-state)))))
+
+(defun polymuse--reset-stale-reviews ()
+  "Reset any stale reviews across all buffers."
+  (dolist (buf (buffer-list))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (when (bound-and-true-p polymuse-mode)
+          (dolist (review polymuse--reviews)
+            (when (polymuse--review-stale-p review)
+              (when polymuse-debug
+                (message "Resetting stale review: %s" (polymuse-review-state-id review)))
+              (setf (polymuse-review-state-status review) 'idle)
+              (setf (polymuse-review-state-request-started-time review) nil))))))))
 
 (defun polymuse--global-idle-tick ()
   "Check all muse-enabled buffers and run due reviews."
   (when polymuse-debug  (message "Polymuse: Tick!"))
+  ;; First, reset any stale reviews
+  (polymuse--reset-stale-reviews)
+  ;; Then check for due reviews
   (dolist (buf (buffer-list))
-    (with-current-buffer buf
-      (when polymuse-mode
-        (dolist (review polymuse--reviews)
-          (let* ((interval (polymuse-review-state-interval review))
-                 (last-run (or (polymuse-review-state-last-run-time review) 0))
-                 (now (float-time)))
-            (if (> (- now last-run) interval)
-                (polymuse--run-review buf review)
-              (message "skipping %s, review too recent"
-                       (polymuse-review-state-id review)))))))))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (when polymuse-mode
+          (dolist (review polymuse--reviews)
+            (let* ((interval (polymuse-review-state-interval review))
+                   (last-run (or (polymuse-review-state-last-run-time review) 0))
+                   (now (float-time)))
+              (if (and (> (- now last-run) interval)
+                       (polymuse--should-review-p buf review))
+                  (polymuse--run-review buf review)
+                (when polymuse-debug
+                  (message "skipping %s, review too recent or conditions not met"
+                           (polymuse-review-state-id review))))))))))
 
 (defsubst polymuse--region-length (region)
   "Return the length of REGION (a cons of BEG . END), or 0 if nil."
@@ -1095,6 +1182,10 @@ Returns a plist with :forward-context and :backward-context regions."
     "Default idle time (in seconds) between Polymuse reviews."
     :type 'number)
 
+  (defun polymuse--update-activity-time ()
+    "Update the last activity timestamp for the current buffer."
+    (setq polymuse--last-activity-time (float-time)))
+
   (defun polymuse--enable ()
     "Enable the Polymuse LLM live review mode."
     (unless polymuse--timer
@@ -1109,6 +1200,11 @@ Returns a plist with :forward-context and :backward-context regions."
       (setq polymuse--unit-grabber #'polymuse--get-unit-paragraph
             polymuse--prev-context-grabber #'polymuse--get-context-before-point-paragraphs
             polymuse--next-context-grabber #'polymuse--get-context-after-point-paragraphs))
+    ;; Track buffer activity for intelligent review scheduling
+    (polymuse--update-activity-time)
+    (add-hook 'after-change-functions
+              (lambda (&rest _) (polymuse--update-activity-time))
+              nil t)
     (polymuse--load-tools))
 
   (defun polymuse--disable ()
@@ -1217,7 +1313,9 @@ Returns a plist with :forward-context and :backward-context regions."
                                          local-instructions)
                    :backend            backend
                    :review-context     review-context
-                   :source-buffer      (current-buffer))))
+                   :source-buffer      (current-buffer)
+                   :status             'idle
+                   :request-started-time nil)))
       (push state polymuse--reviews)
       (polymuse--enable)
       (message "Polymuse review %s created with backend %s; suggestions in %s"
@@ -1268,7 +1366,9 @@ REVIEW-CONTEXT is the number of lines of earlier review to include in the
                                          local-instructions)
                    :backend            backend
                    :review-context     review-context
-                   :source-buffer      (current-buffer))))
+                   :source-buffer      (current-buffer)
+                   :status             'idle
+                   :request-started-time nil)))
       (push state polymuse--reviews)
       (polymuse--enable)
       (message "Polymuse review %s created with backend %s; suggestions in %s"
