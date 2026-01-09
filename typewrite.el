@@ -15,7 +15,25 @@
 ;;
 ;;; Commentary:
 ;;
-;;  Description
+;; Typewrite provides a typewriter effect for inserting text into Emacs buffers.
+;; Instead of inserting text all at once, it gradually reveals the text
+;; character by character at a configurable rate, creating a more dynamic
+;; and pleasant visual experience.
+;;
+;; Features:
+;; - Configurable typing speed (characters per second)
+;; - Multiple simultaneous jobs in different buffers
+;; - Auto-scrolling to follow the insertion point
+;; - Budget-based character accumulation for smooth animation
+;; - Proper timer cleanup when jobs complete
+;;
+;; Usage:
+;;   (typewrite-enqueue-job "Hello, world!" (current-buffer)
+;;                          :cps 50
+;;                          :follow t)
+;;
+;; This is particularly useful for displaying LLM responses, log output,
+;; or any other text where a gradual reveal enhances the user experience.
 ;;
 ;;; Code:
 

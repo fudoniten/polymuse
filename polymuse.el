@@ -15,7 +15,26 @@
 ;;
 ;;; Commentary:
 ;;
-;;  Description
+;; Polymuse is an AI-powered "over-the-shoulder" coding assistant for Emacs.
+;; It provides continuous, context-aware code review and suggestions while
+;; you write code or prose.
+;;
+;; Features:
+;; - Automatic periodic reviews of your work
+;; - Context-aware suggestions based on surrounding code
+;; - Support for multiple LLM backends (Ollama, OpenAI)
+;; - Customizable review intervals and instructions
+;; - Typewriter-style animated output for a pleasant UX
+;;
+;; Quick Start:
+;; 1. Set up a backend: M-x polymuse-define-default-backend
+;; 2. Enable polymuse-mode in a buffer
+;; 3. Add a reviewer: M-x polymuse-add-reviewer
+;; 4. Customize instructions: C-c C-r e
+;;
+;; The reviewer will automatically provide feedback based on your cursor
+;; position and the surrounding context. Reviews appear in a side window
+;; and are updated periodically as you work.
 ;;
 ;;; Code:
 

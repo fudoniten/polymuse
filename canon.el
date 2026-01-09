@@ -15,7 +15,28 @@
 ;;
 ;;; Commentary:
 ;;
-;;  Description
+;; Canon is a tool for managing the "canon" of a creative work - characters,
+;; locations, events, and other entities that need to be tracked for consistency.
+;;
+;; It uses Org-mode files to store entity information in a structured format,
+;; with top-level headings for entity types (e.g., "Characters", "Locations")
+;; and second-level headings for individual entities.
+;;
+;; Features:
+;; - Navigate to entities by ID
+;; - Insert new entities with custom types
+;; - Read and update entity information programmatically
+;; - Search entities by property values
+;; - Automatic type heading creation
+;;
+;; Usage:
+;; 1. Enable canon-mode in your writing buffer
+;; 2. Specify a canon file (e.g., canon.org) when prompted
+;; 3. Use C-c C-c i to insert entities
+;; 4. Use C-c C-c j to jump to an entity
+;; 5. Use C-c C-c t to add new entity types
+;;
+;; Entities are stored with :ID: properties for reliable cross-referencing.
 ;;
 ;;; Code:
 
