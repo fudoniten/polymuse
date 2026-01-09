@@ -970,11 +970,12 @@ suggest improvements without modifying the canon directly."
 (defun polymuse--format-tools-prompt ()
   "Format tools prompt for LLM from all tool sources."
   (let ((tools (polymuse--collect-tools)))
-    (mapcar (lambda (tool)
-              `((tool-name        . ,(polymuse-tool-name tool))
-                (tool-args        . ,(mapcar #'symbol-name (polymuse-tool-arguments tool)))
-                (tool-description . ,(polymuse-tool-description tool))))
-            tools)))
+    (vconcat
+     (mapcar (lambda (tool)
+               `((tool-name        . ,(polymuse-tool-name tool))
+                 (tool-args        . ,(vconcat (mapcar #'symbol-name (polymuse-tool-arguments tool))))
+                 (tool-description . ,(polymuse-tool-description tool))))
+             tools))))
 
 (defun polymuse--calculate-context-regions (max-chars mode-prompt local-prompt current-unit)
   "Calculate forward and backward context regions within budget.
