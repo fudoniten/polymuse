@@ -100,6 +100,7 @@
                        (find-file-noselect canon-file)))))
     (with-current-buffer buf
       (unless (bound-and-true-p canon-mode)
+        (setq-local canon-file (buffer-file-name))
         (canon-mode 1)))
     buf))
 
