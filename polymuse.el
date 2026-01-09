@@ -200,10 +200,10 @@ that defines any project-specific tools for Polymuse to use.")
 (defun polymuse-create-ollama-executor (name host model &optional protocol)
   "Set up Polymuse Ollama backend NAME for HOST with MODEL over PROTOCOL."
   (gptel-make-ollama name
-                     :host     host
-                     :protocol (or protocol "https")
-                     :key      nil
-                     :models   (list model)))
+    :host     host
+    :protocol (or protocol "https")
+    :key      nil
+    :models   (list model)))
 
 (defun polymuse-create-openai-executor (name model)
   "Set up Polymuse Ollama backend NAME for HOST with MODEL over PROTOCOL."
@@ -815,43 +815,43 @@ review, or if it was modified within `polymuse-buffer-activity-timeout' seconds.
                   (message "skipping %s, review too recent or conditions not met"
                            (polymuse-review-state-id review))))))))))
 
-(defsubst polymuse--region-length (region)
-  "Return the length of REGION (a cons of BEG . END), or 0 if nil."
-  (if (and region (consp region))
-      (- (cdr region) (car region))
-    0))
+  (defsubst polymuse--region-length (region)
+    "Return the length of REGION (a cons of BEG . END), or 0 if nil."
+    (if (and region (consp region))
+        (- (cdr region) (car region))
+      0))
 
-(defsubst polymuse--region-string (region)
-  "Return the buffer substring for REGION, or an empty string if nil."
-  (if (and region (consp region))
-      (buffer-substring-no-properties (car region) (cdr region))
-    ""))
+  (defsubst polymuse--region-string (region)
+    "Return the buffer substring for REGION, or an empty string if nil."
+    (if (and region (consp region))
+        (buffer-substring-no-properties (car region) (cdr region))
+      ""))
 
-(defun polymuse--grab-buffer-tail (buffer n)
-  "Return the last N lines from BUFFER as a string."
-  (with-current-buffer buffer
-    (goto-char (point-max))
-    (forward-line (- n))
-    (buffer-substring-no-properties (point) (point-max))))
+  (defun polymuse--grab-buffer-tail (buffer n)
+    "Return the last N lines from BUFFER as a string."
+    (with-current-buffer buffer
+      (goto-char (point-max))
+      (forward-line (- n))
+      (buffer-substring-no-properties (point) (point-max))))
 
-(defun polymuse--debug-log (format-string &rest args)
-  "Log debug message to Polymuse debug buffer if debug mode is enabled.
+  (defun polymuse--debug-log (format-string &rest args)
+    "Log debug message to Polymuse debug buffer if debug mode is enabled.
 FORMAT-STRING and ARGS are passed to `format'."
-  (when polymuse-debug
-    (with-current-buffer (get-buffer-create polymuse-debug-buffer)
-      (insert (apply #'format format-string args)))))
+    (when polymuse-debug
+      (with-current-buffer (get-buffer-create polymuse-debug-buffer)
+        (insert (apply #'format format-string args)))))
 
-(defun polymuse--load-tools ()
-  "Load project-specific tools from `polymuse-tools-file', if set."
-  (when polymuse-tools-file
-    (let* ((base-dir (or (and buffer-file-name
-                              (file-name-directory buffer-file-name))
-                         default-directory))
-           (file (if (file-name-absolute-p polymuse-tools-file)
-                     polymuse-tools-file
-                   (expand-file-name polymuse-tools-file base-dir))))
-      (when (file-readable-p file)
-        (load file nil 'nomessage))))
+  (defun polymuse--load-tools ()
+    "Load project-specific tools from `polymuse-tools-file', if set."
+    (when polymuse-tools-file
+      (let* ((base-dir (or (and buffer-file-name
+                                (file-name-directory buffer-file-name))
+                           default-directory))
+             (file (if (file-name-absolute-p polymuse-tools-file)
+                       polymuse-tools-file
+                     (expand-file-name polymuse-tools-file base-dir))))
+        (when (file-readable-p file)
+          (load file nil 'nomessage)))))
 
   (defun polymuse--default-profile ()
     "Return the default profile based on current major mode and active modes."

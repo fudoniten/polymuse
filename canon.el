@@ -507,7 +507,7 @@ This is a safe, read-only tool for Polymuse LLM integration."
   "Append SUGGESTION for ENTITY-ID to its Suggestions section.
 
 This is a safe, append-only tool that never overwrites existing content.
-Suggestions are added to a 'Suggestions' subheading for user review."
+Suggestions are added to a `Suggestions' subheading for user review."
   (with-current-buffer (canon--get-buffer)
     (if-let ((pos (canon--find-entity-heading entity-id)))
         (progn
@@ -524,9 +524,9 @@ Suggestions are added to a 'Suggestions' subheading for user review."
 (defun canon-tool-suggest-section-update (entity-id section suggestion)
   "Append SUGGESTION for SECTION in ENTITY-ID to its Suggestions section.
 
-This allows suggesting updates to specific sections (e.g., 'Architecture',
-'Style Guide') without modifying the original content. The suggestion is
-added to a 'Suggestions' subheading for user review."
+This allows suggesting updates to specific sections (e.g., `Architecture',
+`Style Guide') without modifying the original content. The suggestion is
+added to a `Suggestions' subheading for user review."
   (with-current-buffer (canon--get-buffer)
     (if-let ((pos (canon--find-entity-heading entity-id)))
         (progn
