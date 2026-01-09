@@ -25,6 +25,8 @@
 ;; - Support for multiple LLM backends (Ollama, OpenAI)
 ;; - Customizable review intervals and instructions
 ;; - Typewriter-style animated output for a pleasant UX
+;; - Tool profiles that give the LLM access to project-specific information
+;; - Integration with canon.el for character/location tracking in prose
 ;;
 ;; Quick Start:
 ;; 1. Set up a backend: M-x polymuse-define-default-backend
@@ -35,6 +37,23 @@
 ;; The reviewer will automatically provide feedback based on your cursor
 ;; position and the surrounding context. Reviews appear in a side window
 ;; and are updated periodically as you work.
+;;
+;; Tool Profiles:
+;; Polymuse uses a layered tool system to give the LLM context-specific
+;; capabilities:
+;; - Built-in tools are auto-registered based on active modes
+;;   (e.g., canon-mode provides entity lookup tools)
+;; - Profiles organize tools for different workflows
+;;   (prose-writing, code-review, architecture, debugging)
+;; - File-local tools can be defined in .polymuse-tools.el
+;;
+;; When canon-mode is active, Polymuse automatically provides tools for:
+;; - Looking up characters, locations, and other entities
+;; - Searching entities by properties
+;; - Suggesting modifications (appended safely, never clobbering)
+;;
+;; Use M-x polymuse-switch-profile to change profiles.
+;; Use M-x polymuse-show-active-tools to see available tools.
 ;;
 ;;; Code:
 
@@ -352,6 +371,38 @@ If the server is unreachable, you may experience UI freezing."
   (interactive)
   (setq polymuse-debug (not polymuse-debug)))
 
+(defun polymuse-switch-profile (profile)
+  "Switch to a different tool PROFILE."
+  (interactive
+   (list (intern (completing-read "Tool profile: "
+                                  (mapcar (lambda (p) (symbol-name (car p)))
+                                          polymuse-tool-profiles)
+                                  nil t))))
+  (setq polymuse-active-profile profile)
+  (message "Switched to profile: %s" profile))
+
+(defun polymuse-show-active-tools ()
+  "Display the currently active tools for this buffer."
+  (interactive)
+  (let* ((tools (polymuse--collect-tools))
+         (profile (or polymuse-active-profile
+                      (polymuse--default-profile)))
+         (buf (get-buffer-create "*Polymuse Active Tools*")))
+    (with-current-buffer buf
+      (erase-buffer)
+      (insert (format "Active Profile: %s\n\n" profile))
+      (if tools
+          (dolist (tool tools)
+            (insert (format "- %s (%s)\n  %s\n\n"
+                            (polymuse-tool-name tool)
+                            (mapconcat #'symbol-name
+                                       (polymuse-tool-arguments tool)
+                                       ", ")
+                            (polymuse-tool-description tool))))
+        (insert "No tools active.\n"))
+      (help-mode))
+    (display-buffer buf)))
+
 (cl-defgeneric polymuse-request-review (backend request &key system callback &allow-other-keys)
   "Execute REQUEST to the given BACKEND, calling CALLBACK upon completion.")
 
@@ -475,6 +526,22 @@ If the server is unreachable, you may experience UI freezing."
   "Tools to expose to the LLM, specific to the local buffer.
 
   Contains an alist of (FUN-NAME . FUN).")
+
+(defvar polymuse-tool-profiles
+  '((prose-writing . ())
+    (code-review . ())
+    (architecture . ())
+    (debugging . ()))
+  "Named tool profiles for different Polymuse sessions.
+
+Each profile is an alist of (PROFILE-NAME . TOOL-LIST), where TOOL-LIST
+is a list of tool symbols to be registered for that profile.")
+
+(defvar-local polymuse-active-profile nil
+  "Currently active tool profile for this buffer.
+
+If nil, the profile will be auto-selected based on major mode and
+active minor modes.")
 
 (defvar-local polymuse--reviews '()
   "List of all `polymuse-review-state' structs associated with this buffer.")
@@ -699,13 +766,128 @@ FORMAT-STRING and ARGS are passed to `format'."
       (when (file-readable-p file)
         (load file nil 'nomessage))))
 
+(defun polymuse--default-profile ()
+  "Return the default profile based on current major mode and active modes."
+  (cond
+   ((and (bound-and-true-p canon-mode)
+         (derived-mode-p 'prog-mode))
+    'code-review)
+   ((bound-and-true-p canon-mode)
+    'prose-writing)
+   ((derived-mode-p 'prog-mode)
+    'code-review)
+   ((derived-mode-p 'text-mode)
+    'prose-writing)
+   (t 'prose-writing)))
+
+(defun polymuse--builtin-tools ()
+  "Return built-in tools based on active modes.
+
+Returns a list of `polymuse-tool' structs."
+  (let (tools)
+    ;; Canon mode provides entity lookup tools
+    (when (bound-and-true-p canon-mode)
+      (if (derived-mode-p 'prog-mode)
+          (setq tools (append tools (polymuse--canon-code-tools)))
+        (setq tools (append tools (polymuse--canon-prose-tools)))))
+    tools))
+
+(defun polymuse--profile-tools (profile)
+  "Return tools for PROFILE.
+
+Returns a list of `polymuse-tool' structs."
+  (let ((tool-names (alist-get profile polymuse-tool-profiles)))
+    ;; For now, profile tools are empty by default
+    ;; Users can add custom tools to profiles
+    (delq nil
+          (mapcar (lambda (name)
+                    (alist-get name polymuse-local-tools))
+                  tool-names))))
+
+(defun polymuse--merge-tool-lists (&rest tool-lists)
+  "Merge TOOL-LISTS, with later lists taking precedence.
+
+Tools are identified by their name. If multiple tools have the same
+name, the last one wins."
+  (let ((merged '()))
+    (dolist (tool-list tool-lists)
+      (dolist (tool tool-list)
+        (when (polymuse-tool-p tool)
+          (setf (alist-get (polymuse-tool-name tool) merged
+                           nil nil #'string=)
+                tool))))
+    (mapcar #'cdr merged)))
+
+(defun polymuse--collect-tools ()
+  "Collect tools from all layers: built-ins, profile, and local.
+
+Returns a list of `polymuse-tool' structs."
+  (let* ((builtin-tools (polymuse--builtin-tools))
+         (profile (or polymuse-active-profile
+                      (polymuse--default-profile)))
+         (profile-tools (polymuse--profile-tools profile))
+         (local-tools (mapcar #'cdr polymuse-local-tools)))
+    (polymuse--merge-tool-lists builtin-tools profile-tools local-tools)))
+
+(defun polymuse--canon-prose-tools ()
+  "Return Polymuse tools for prose writing with canon-mode.
+
+These tools allow the LLM to lookup characters, locations, and other
+entities, and suggest modifications without clobbering definitions."
+  (require 'canon)
+  (list
+   (make-polymuse-tool
+    :name "canon-lookup-entity"
+    :function #'canon-tool-lookup-entity
+    :description "Look up a character, location, or other entity from the story canon by ID. Returns the full entity definition."
+    :arguments '(entity-id))
+   (make-polymuse-tool
+    :name "canon-list-entities"
+    :function #'canon-tool-list-all-entities
+    :description "List all entities in the canon organized by type (Characters, Locations, etc). Useful for getting an overview."
+    :arguments '())
+   (make-polymuse-tool
+    :name "canon-search-by-property"
+    :function #'canon-tool-search-by-property
+    :description "Search for entities by property value. Example: find all characters with 'role=protagonist'. Returns matching entity IDs."
+    :arguments '(property value))
+   (make-polymuse-tool
+    :name "canon-suggest-update"
+    :function #'canon-tool-suggest-entity-update
+    :description "Suggest a modification to an entity (character, location, etc). The suggestion will be appended to the entity's 'Suggestions' section for the user to review. This does NOT modify the entity directly."
+    :arguments '(entity-id suggestion))))
+
+(defun polymuse--canon-code-tools ()
+  "Return Polymuse tools for code review with canon-mode.
+
+These tools allow the LLM to access architecture docs, style guides, and
+suggest improvements without modifying the canon directly."
+  (require 'canon)
+  (list
+   (make-polymuse-tool
+    :name "canon-lookup-doc"
+    :function #'canon-tool-lookup-entity
+    :description "Look up a documentation entity from the canon by ID (e.g., 'architecture', 'style-guide', 'api-design'). Returns the full document."
+    :arguments '(doc-id))
+   (make-polymuse-tool
+    :name "canon-list-docs"
+    :function #'canon-tool-list-all-entities
+    :description "List all documentation entities in the canon (architecture, style guides, blueprints, etc)."
+    :arguments '())
+   (make-polymuse-tool
+    :name "canon-suggest-doc-update"
+    :function #'canon-tool-suggest-section-update
+    :description "Suggest an update to a specific section of a documentation entity. Use this to note inaccuracies or suggest improvements. The suggestion will be added to the 'Suggestions' section for user review. This does NOT modify the document directly."
+    :arguments '(doc-id section-name suggestion))))
+
 (defun polymuse--format-tools-prompt ()
-  "Format tools prompt for LLM from `polymuse-local-tools'."
-  (mapcar (lambda (tool)
-            `(("tool-name"        . ,(polymuse-tool-name tool))
-              ("tool-args"        . ,(mapcar #'symbol-name (polymuse-tool-arguments (cdr tool))))
-              ("tool-description" . ,(polymuse-tool-description (cdr tool)))))
-          polymuse-local-tools))
+  "Format tools prompt for LLM from all tool sources."
+  (let ((tools (polymuse--collect-tools)))
+    (mapcar (lambda (tool)
+              `(("tool-name"        . ,(polymuse-tool-name tool))
+                ("tool-args"        . ,(mapcar #'symbol-name (polymuse-tool-arguments tool)))
+                ("tool-description" . ,(polymuse-tool-description tool))))
+            tools)))
 
 (defun polymuse--calculate-context-regions (max-chars mode-prompt local-prompt current-unit)
   "Calculate forward and backward context regions within budget.

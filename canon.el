@@ -28,6 +28,7 @@
 ;; - Read and update entity information programmatically
 ;; - Search entities by property values
 ;; - Automatic type heading creation
+;; - Integration with Polymuse for AI-assisted writing
 ;;
 ;; Usage:
 ;; 1. Enable canon-mode in your writing buffer
@@ -37,6 +38,21 @@
 ;; 5. Use C-c C-c t to add new entity types
 ;;
 ;; Entities are stored with :ID: properties for reliable cross-referencing.
+;;
+;; Polymuse Integration:
+;; When canon-mode is active in a buffer with polymuse-mode, the LLM
+;; automatically gains access to safe tools for:
+;; - Looking up entity definitions (characters, locations, etc)
+;; - Listing all entities in the canon
+;; - Searching entities by property
+;; - Suggesting modifications (appended to a "Suggestions" section)
+;;
+;; The LLM can read entity information and suggest changes, but it cannot
+;; directly modify or clobber existing entity definitions. All suggestions
+;; are appended to a "Suggestions" subheading for user review.
+;;
+;; For prose writing, canon provides character and location tracking.
+;; For code, it can store architecture docs and style guides.
 ;;
 ;;; Code:
 
@@ -415,6 +431,116 @@ PROP and VALUE are strings."
       ('() nil)
       (`(,only) only)
       (_ (error "Multiple entities match %s=%s: %S" prop value ids)))))
+
+;;;;
+;; Polymuse Tool Integration
+;;;;
+
+(defun canon-tool-lookup-entity (entity-id)
+  "Look up ENTITY-ID in the canon and return its full text.
+
+This is a safe, read-only tool for Polymuse LLM integration."
+  (with-current-buffer (canon--get-buffer)
+    (if-let ((text (canon--get-entity-text entity-id)))
+        (format "Entity: %s\n\n%s" entity-id text)
+      (format "No entity found with ID: %s" entity-id))))
+
+(defun canon-tool-search-by-property (property value)
+  "Search for entities where PROPERTY has VALUE.
+
+Returns a list of matching entity IDs with their basic info.
+This is a safe, read-only tool for Polymuse LLM integration."
+  (with-current-buffer (canon--get-buffer)
+    (let ((ids (canon-get-ids-by-property property value)))
+      (if ids
+          (format "Found %d entities with %s=%s:\n\n%s"
+                  (length ids)
+                  property
+                  value
+                  (mapconcat (lambda (id)
+                               (format "- %s\n  %s"
+                                       id
+                                       (or (canon--get-entity-section id "Description")
+                                           "(no description)")))
+                             ids
+                             "\n"))
+        (format "No entities found with %s=%s" property value)))))
+
+(defun canon-tool-list-all-entities ()
+  "List all entities in the canon by type.
+
+Returns a summary of all entities organized by their type headings.
+This is a safe, read-only tool for Polymuse LLM integration."
+  (with-current-buffer (canon--get-buffer)
+    (org-with-wide-buffer
+     (goto-char (point-min))
+     (let ((types '()))
+       (org-map-entries
+        (lambda ()
+          (let* ((level (org-current-level))
+                 (heading (org-get-heading t t t t)))
+            (cond
+             ((= level 1)
+              (push (cons heading '()) types))
+             ((= level 2)
+              (when types
+                (let* ((current-type (car types))
+                       (type-name (car current-type))
+                       (id (org-entry-get nil "ID")))
+                  (when id
+                    (setcdr current-type
+                            (cons (format "  - %s: %s" id heading)
+                                  (cdr current-type))))))))))
+        t 'file)
+       (if types
+           (mapconcat (lambda (type)
+                        (format "%s:\n%s"
+                                (car type)
+                                (mapconcat #'identity
+                                           (reverse (cdr type))
+                                           "\n")))
+                      (reverse types)
+                      "\n\n")
+         "No entities found in canon.")))))
+
+(defun canon-tool-suggest-entity-update (entity-id suggestion)
+  "Append SUGGESTION for ENTITY-ID to its Suggestions section.
+
+This is a safe, append-only tool that never overwrites existing content.
+Suggestions are added to a 'Suggestions' subheading for user review."
+  (with-current-buffer (canon--get-buffer)
+    (if-let ((pos (canon--find-entity-heading entity-id)))
+        (progn
+          (canon--append-to-subheading-text
+           pos
+           "Suggestions"
+           (format "\n*** Suggestion (%s)\n%s\n"
+                   (format-time-string "%Y-%m-%d %H:%M:%S")
+                   suggestion))
+          (format "Suggestion added to entity '%s' under 'Suggestions' section. The user can review and apply it manually."
+                  entity-id))
+      (format "Cannot add suggestion: entity '%s' not found" entity-id))))
+
+(defun canon-tool-suggest-section-update (entity-id section suggestion)
+  "Append SUGGESTION for SECTION in ENTITY-ID to its Suggestions section.
+
+This allows suggesting updates to specific sections (e.g., 'Architecture',
+'Style Guide') without modifying the original content. The suggestion is
+added to a 'Suggestions' subheading for user review."
+  (with-current-buffer (canon--get-buffer)
+    (if-let ((pos (canon--find-entity-heading entity-id)))
+        (progn
+          (canon--append-to-subheading-text
+           pos
+           "Suggestions"
+           (format "\n*** Suggestion for '%s' section (%s)\n%s\n"
+                   section
+                   (format-time-string "%Y-%m-%d %H:%M:%S")
+                   suggestion))
+          (format "Suggestion for section '%s' added to entity '%s'. The user can review and apply it manually."
+                  section
+                  entity-id))
+      (format "Cannot add suggestion: entity '%s' not found" entity-id))))
 
 (provide 'canon)
 ;;; canon.el ends here
