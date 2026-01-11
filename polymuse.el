@@ -107,7 +107,7 @@
   "Protocol with which to interact with polymuse."
   :type 'string)
 
-(defcustom polymuse-max-prompt-characters 12000
+(defcustom polymuse-max-prompt-characters 10000
   "Maximum length of a prompt, in characters."
   :type 'integer)
 
@@ -115,7 +115,7 @@
   "Number of previous lines of review to include with the prompt."
   :type 'integer)
 
-(defcustom polymuse-default-buffer-size-limit 8196
+(defcustom polymuse-default-buffer-size-limit 10000
   "Default maximum size for Polymuse review buffers.
 
 When the buffer grows larger than this, the beginning will be truncated."
