@@ -58,11 +58,62 @@
   :type 'boolean
   :group 'typewrite)
 
-(defvar typewrite--jobs nil
-  "List of active typewriter jobs.")
+(cl-defstruct typewrite-scheduler
+  "Protocol for scheduling typewriter ticks.
 
-(defvar typewrite--timer nil
-  "Driver timer for active typewriter jobs.")
+This allows tests to use a synchronous scheduler instead of real timers."
+  (start-fn nil)  ; (lambda (interval callback) ...) -> timer object
+  (stop-fn nil))  ; (lambda (timer) ...) -> void
+
+(defun typewrite--create-timer-scheduler ()
+  "Create the default timer-based scheduler."
+  (make-typewrite-scheduler
+   :start-fn (lambda (interval callback)
+               (run-at-time 0 interval callback))
+   :stop-fn (lambda (timer)
+              (when (timerp timer)
+                (cancel-timer timer)))))
+
+(defun typewrite--create-immediate-scheduler ()
+  "Create a scheduler for immediate synchronous execution (for testing).
+
+This scheduler immediately calls the callback without using timers."
+  (make-typewrite-scheduler
+   :start-fn (lambda (_interval callback)
+               (funcall callback)
+               'immediate-scheduler-token)
+   :stop-fn (lambda (_timer) nil)))
+
+(cl-defstruct typewrite-state
+  "State container for typewriter jobs and timer.
+
+This allows tests to isolate state by binding `typewrite--test-state'."
+  (jobs nil)
+  (timer nil)
+  (scheduler nil)) ; typewrite-scheduler instance
+
+(defvar typewrite--default-state
+  (make-typewrite-state :scheduler (typewrite--create-timer-scheduler))
+  "Default global state for typewriter.")
+
+(defvar typewrite--test-state nil
+  "When bound in tests, overrides the default state.
+
+Tests should bind this to a fresh `typewrite-state' to isolate themselves
+from global state and other tests.")
+
+(defun typewrite--get-state ()
+  "Get the current typewriter state.
+
+Returns `typewrite--test-state' if bound (for testing), otherwise
+returns the global `typewrite--default-state'."
+  (or typewrite--test-state typewrite--default-state))
+
+(defvar typewrite-test-mode nil
+  "When non-nil, execute typewriter jobs synchronously for testing.
+
+In test mode, `typewrite-enqueue-job' will immediately insert all text
+without using timers, making tests deterministic and fast.")
 
 (cl-defstruct typewrite-job
   buffer
@@ -78,13 +129,39 @@
 
 (defun typewrite--ensure-timer (&optional interval)
   "Ensure the driver timer is running, at INTERVAL seconds (or default)."
-  (let ((seconds (or interval typewrite-tick-interval)))
+  (let* ((seconds (or interval typewrite-tick-interval))
+         (state (typewrite--get-state))
+         (scheduler (or (typewrite-state-scheduler state)
+                        (typewrite--create-timer-scheduler))))
     (setq seconds (if (and (numberp seconds) (> seconds 0))
                       seconds
                     typewrite-tick-interval))
-    (unless typewrite--timer
-      (setq typewrite--timer
-            (run-at-time 0 seconds #'typewrite--tick)))))
+    (unless (typewrite-state-timer state)
+      (setf (typewrite-state-timer state)
+            (funcall (typewrite-scheduler-start-fn scheduler)
+                     seconds
+                     #'typewrite--tick)))))
+
+(defun typewrite--execute-job-synchronously (job)
+  "Execute JOB immediately and synchronously, inserting all text at once.
+
+This is used in test mode to avoid timer dependencies and make tests
+deterministic. The job's done-callback will be called after insertion."
+  (let* ((buf (typewrite-job-buffer job))
+         (marker (typewrite-job-marker job))
+         (str (typewrite-job-string job))
+         (follow (typewrite-job-follow job))
+         (inhibit-read-only-val (typewrite-job-inhibit-read-only job)))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (save-excursion
+          (let ((inhibit-read-only inhibit-read-only-val))
+            (goto-char marker)
+            (insert str)))
+        (setf (typewrite-job-index job) (length str))
+        (when follow
+          (typewrite--follow-marker job marker))
+        (typewrite--run-done-callback job)))))
 
 (defun typewrite-enqueue-job (str buffer &rest config)
   "Enqueue a new typewriter job for STR into BUFFER, with CONFIG.
@@ -137,28 +214,35 @@ CONFIG is a plist which may contain:
                 :follow (plist-get config :follow)
                 :inhibit-read-only inhibit-read-only-setting
                 :done-callback (plist-get config :done-callback))))
-      (push job typewrite--jobs)
-      (typewrite--ensure-timer)
+      (if typewrite-test-mode
+          (typewrite--execute-job-synchronously job)
+        (let ((state (typewrite--get-state)))
+          (push job (typewrite-state-jobs state))
+          (typewrite--ensure-timer)))
       job)))
 
 (defun typewrite--tick ()
   "Advance all active `typewrite' jobs once.
 
-For each job in `typewrite--jobs', compute how many characters should be
+For each job in the state's job list, compute how many characters should be
 inserted based on the CPS and the elapsed time since `typewrite-job-last-time'.
 Insert that many characters at the job's marker, update its index, and remove
 finished or dead jobs.
 
-If no jobs remain after this tick, cancel `typewrite--timer' and set it to nil."
-  (let ((now (float-time)))
-    (setq typewrite--jobs
+If no jobs remain after this tick, cancel the timer and set it to nil."
+  (let* ((now (float-time))
+         (state (typewrite--get-state)))
+    (setf (typewrite-state-jobs state)
           (cl-remove-if-not (lambda (job) (typewrite--process-job job now))
-                            typewrite--jobs))
+                            (typewrite-state-jobs state)))
     ;; if no jobs remain, stop the timer
-    (when (and (null typewrite--jobs)
-               typewrite--timer)
-      (cancel-timer typewrite--timer)
-      (setq typewrite--timer nil))))
+    (when (and (null (typewrite-state-jobs state))
+               (typewrite-state-timer state))
+      (let ((scheduler (or (typewrite-state-scheduler state)
+                           (typewrite--create-timer-scheduler))))
+        (funcall (typewrite-scheduler-stop-fn scheduler)
+                 (typewrite-state-timer state))
+        (setf (typewrite-state-timer state) nil)))))
 
 (defun typewrite--process-job (job now)
   "Advance JOB at time NOW.
@@ -233,15 +317,87 @@ Return JOB when it should remain active, or nil to drop it."
 (defun typewrite-kill-jobs ()
   "Stop all active typewriter jobs and cancel the driver timer.
 
-This clears `typewrite--jobs' and cancels `typewrite--timer' if it is
-currently running. Does *not* run any job `done-callback's."
+This clears the job list and cancels the timer if it is currently running.
+Does *not* run any job `done-callback's."
   (interactive)
-  ;; Drop all jobs on the floor.
-  (setq typewrite--jobs nil)
-  ;; Cancel the timer if it's still alive.
-  (when (and typewrite--timer (timerp typewrite--timer))
-    (cancel-timer typewrite--timer)
-    (setq typewrite--timer nil)))
+  (let* ((state (typewrite--get-state))
+         (scheduler (or (typewrite-state-scheduler state)
+                        (typewrite--create-timer-scheduler))))
+    ;; Drop all jobs on the floor.
+    (setf (typewrite-state-jobs state) nil)
+    ;; Cancel the timer if it's still alive.
+    (when-let ((timer (typewrite-state-timer state)))
+      (funcall (typewrite-scheduler-stop-fn scheduler) timer)
+      (setf (typewrite-state-timer state) nil))))
+
+;;;;
+;; Test Helpers
+;;;;
+
+(defmacro typewrite-test-with-isolated-state (&rest body)
+  "Execute BODY with isolated typewriter state.
+
+This creates a fresh state container for the duration of BODY,
+preventing tests from interfering with each other or with global state.
+Uses an immediate scheduler so tests don't depend on timers.
+
+Example:
+  (typewrite-test-with-isolated-state
+    (let ((typewrite-test-mode t))
+      (with-temp-buffer
+        (typewrite-enqueue-job \"test\" (current-buffer))
+        (should (string= \"test\" (buffer-string))))))"
+  (declare (indent 0))
+  `(let ((typewrite--test-state
+          (make-typewrite-state
+           :scheduler (typewrite--create-immediate-scheduler))))
+     ,@body))
+
+(defun typewrite-test-create-simple-job (text &optional cps)
+  "Create a simple synchronous typewriter job for testing.
+
+TEXT is the string to type. CPS is the characters per second (default 50).
+Returns a cons of (JOB . BUFFER) where JOB is the typewrite-job and
+BUFFER is the temporary buffer. The job is executed synchronously.
+
+The caller is responsible for killing the buffer after testing.
+
+Example:
+  (let* ((result (typewrite-test-create-simple-job \"Hello, world!\"))
+         (job (car result))
+         (buf (cdr result)))
+    (unwind-protect
+        (with-current-buffer buf
+          (should (string-match-p \"Hello\" (buffer-string))))
+      (kill-buffer buf)))"
+  (typewrite-test-with-isolated-state
+    (let* ((typewrite-test-mode t)
+           (buf (generate-new-buffer " *typewrite-test*"))
+           (job (typewrite-enqueue-job text buf
+                                       :cps (or cps 50)
+                                       :newline-before nil)))
+      (cons job buf))))
+
+(defmacro typewrite-test-with-job (text &rest body)
+  "Execute BODY with a test typewriter job for TEXT.
+
+The job is created synchronously in a temporary buffer. Within BODY,
+the variable `test-buffer' is bound to the buffer and `test-job' is
+bound to the job.
+
+Example:
+  (typewrite-test-with-job \"Hello, world!\"
+    (with-current-buffer test-buffer
+      (should (string= \"Hello, world!\" (buffer-string)))))"
+  (declare (indent 1))
+  `(typewrite-test-with-isolated-state
+     (let* ((result (typewrite-test-create-simple-job ,text))
+            (test-job (car result))
+            (test-buffer (cdr result)))
+       (unwind-protect
+           (progn ,@body)
+         (when (buffer-live-p test-buffer)
+           (kill-buffer test-buffer))))))
 
 (provide 'typewrite)
 ;;; typewrite.el ends here

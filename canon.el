@@ -75,20 +75,30 @@
   (canon--maybe-init))
 
 (defun canon--maybe-init ()
-  "Ensure `canon-file' is set, prompting if not."
-  (unless canon-file
+  "Ensure `canon-file' is set, prompting if not.
+
+In test mode (`canon-test-mode'), skips prompting and allows the test
+to set up the buffer manually."
+  (unless (or canon-file canon-test-mode)
     (setq-local canon-file
                 (read-file-name "Canon file: "
                                 default-directory
                                 "canon.org"
                                 nil nil)))
-  (canon--get-buffer))
+  (when canon-file
+    (canon--get-buffer)))
 
 (defvar-local canon-file nil
   "Canon file for the work being written.")
 
 (defvar-local canon--buffer nil
   "Buffer visiting the `canon-file'.")
+
+(defvar canon-test-mode nil
+  "When non-nil, canon operates in test mode.
+
+In test mode, canon-mode will not prompt for a file when initialized,
+allowing tests to set up buffers manually without interactive prompts.")
 
 (defun canon--get-buffer ()
   "Return the buffer visiting `canon-file', opening if needed."
@@ -104,21 +114,34 @@
         (canon-mode 1)))
     buf))
 
+(defun canon--org-find-heading (predicate)
+  "Find heading matching PREDICATE using org-map-entries.
+
+PREDICATE is a function called at each heading that should return
+non-nil if the heading matches. Returns point at the matching heading,
+or nil if no match is found.
+
+This is a wrapper around org-map-entries that allows for potential
+stubbing in tests if needed."
+  (catch 'found
+    (org-map-entries
+     (lambda ()
+       (when (funcall predicate)
+         (throw 'found (point))))
+     t 'file)))
+
 (defun canon--find-entity-heading (id &optional type)
   "Return point at heading with :ID: property = ID.
 
 If TYPE is non-nil, require that the heading title start with [TYPE]. ID
 and TYPE should be strings."
-  (catch 'found
-    (org-map-entries
-     (lambda ()
-       (when (and (equal (org-entry-get nil "ID") id)
-                  (or (not type)
-                      (string-match-p
-                       (format "\\[%s\\]" (regexp-quote type))
-                       (nth 4 (org-heading-components)))))
-         (throw 'found (point))))
-     t 'file)))
+  (canon--org-find-heading
+   (lambda ()
+     (and (equal (org-entry-get nil "ID") id)
+          (or (not type)
+              (string-match-p
+               (format "\\[%s\\]" (regexp-quote type))
+               (nth 4 (org-heading-components))))))))
 
 (defun canon--get-subheading-text (entity-pos subheading)
   "From ENTITY-POS, return text under SUBHEADING.
@@ -263,21 +286,30 @@ title starts with [TYPE]. Return point if found, or nil."
       (org-reveal)
       pos)))
 
+(defun canon--org-collect-headings-by-level (level)
+  "Collect all heading titles at LEVEL.
+
+Returns a list of heading title strings.
+
+This is a wrapper around org operations to allow for potential
+stubbing in tests if needed."
+  (org-with-wide-buffer
+   (goto-char (point-min))
+   (let ((headings '()))
+     (while (re-search-forward org-heading-regexp nil t)
+       (let* ((components (org-heading-components))
+              (h-level    (nth 0 components))
+              (title      (nth 4 components)))
+         (when (= h-level level)
+           (push title headings))))
+     (nreverse headings))))
+
 (defun canon--list-types ()
   "Return a list of type names from top-level headings in the canon file.
 
 Types are taken from level-1 Org headings. The returned list contains
 the types as a list of strings."
-  (org-with-wide-buffer
-   (goto-char (point-min))
-   (let ((types '()))
-     (while (re-search-forward org-heading-regexp nil t)
-       (let* ((components (org-heading-components))
-              (level      (nth 0 components))
-              (title      (nth 4 components)))
-         (when (= level 1)
-           (push title types))))
-     (delete-dups (nreverse types)))))
+  (delete-dups (canon--org-collect-headings-by-level 1)))
 
 (defun canon--ensure-one-blank-line (&optional buffer)
   "Ensure that from the current point in BUFFER, there is one full blank line."
@@ -542,6 +574,133 @@ added to a `Suggestions' subheading for user review."
                   section
                   entity-id))
       (format "Cannot add suggestion: entity '%s' not found" entity-id))))
+
+;;;;
+;; Test Helpers
+;;;;
+
+(defun canon-test-create-buffer (&optional content)
+  "Create a temporary canon buffer for testing.
+
+If CONTENT is provided, it should be a string containing the initial
+org-mode content for the canon. Otherwise, an empty canon with basic
+structure is created.
+
+Returns a cons of (BUFFER . TEMP-FILE) where BUFFER is the canon buffer
+and TEMP-FILE is the path to the temporary file. The caller is responsible
+for cleaning up both the buffer and file after testing.
+
+Example usage:
+  (let* ((canon-setup (canon-test-create-buffer))
+         (canon-buffer (car canon-setup))
+         (canon-file-path (cdr canon-setup)))
+    (unwind-protect
+        (progn
+          (setq canon-file canon-file-path)
+          (setq canon--buffer canon-buffer)
+          ;; Run your tests here
+          )
+      ;; Cleanup
+      (when (buffer-live-p canon-buffer)
+        (kill-buffer canon-buffer))
+      (when (file-exists-p canon-file-path)
+        (delete-file canon-file-path))))"
+  (let* ((temp-file (make-temp-file "canon-test-" nil ".org"))
+         (initial-content (or content "#+TITLE: Test Canon\n\n* Characters\n\n* Locations\n\n"))
+         (buf (find-file-noselect temp-file)))
+    (with-current-buffer buf
+      (erase-buffer)
+      (insert initial-content)
+      (org-mode)
+      (save-buffer)
+      (setq-local canon-file temp-file)
+      (canon-mode 1))
+    (cons buf temp-file)))
+
+(defmacro canon-test-with-temp-canon (content &rest body)
+  "Execute BODY with a temporary canon buffer.
+
+CONTENT is the initial org-mode content for the canon (string).
+Within BODY, `canon-file' and `canon--buffer' are set to the temporary
+test canon. The temporary buffer and file are automatically cleaned up
+after BODY completes.
+
+Example:
+  (canon-test-with-temp-canon \"* Characters\\n\\n* Locations\"
+    (canon-insert-entity \"Characters\" \"alice\")
+    (should (canon-get-entity-text \"alice\")))"
+  (declare (indent 1))
+  `(let* ((canon-setup (canon-test-create-buffer ,content))
+          (canon--buffer (car canon-setup))
+          (canon-file (cdr canon-setup)))
+     (unwind-protect
+         (progn ,@body)
+       (when (buffer-live-p canon--buffer)
+         (kill-buffer canon--buffer))
+       (when (file-exists-p canon-file)
+         (delete-file canon-file)))))
+
+(defun canon-test-fixture-simple-canon ()
+  "Create a simple test canon with common entity types.
+
+Returns a cons of (BUFFER . FILE) for a temporary canon containing
+standard sections: Characters, Locations, Events, and Items.
+
+The caller is responsible for cleanup."
+  (canon-test-create-buffer
+   (string-join
+    '("#+TITLE: Test Canon"
+      ""
+      "* Characters"
+      ""
+      "* Locations"
+      ""
+      "* Events"
+      ""
+      "* Items"
+      "")
+    "\n")))
+
+(defun canon-test-fixture-canon-with-entities ()
+  "Create a test canon pre-populated with sample entities.
+
+Returns a cons of (BUFFER . FILE) for a temporary canon containing
+several sample entities for testing lookups, searches, etc.
+
+The caller is responsible for cleanup."
+  (canon-test-create-buffer
+   (string-join
+    '("#+TITLE: Test Canon"
+      ""
+      "* Characters"
+      ""
+      "** [Characters] alice"
+      ":PROPERTIES:"
+      ":ID: alice"
+      ":Role: protagonist"
+      ":END:"
+      ""
+      "Alice is the main character."
+      ""
+      "** [Characters] bob"
+      ":PROPERTIES:"
+      ":ID: bob"
+      ":Role: antagonist"
+      ":END:"
+      ""
+      "Bob is the villain."
+      ""
+      "* Locations"
+      ""
+      "** [Locations] castle"
+      ":PROPERTIES:"
+      ":ID: castle"
+      ":Type: building"
+      ":END:"
+      ""
+      "A dark and foreboding castle."
+      "")
+    "\n")))
 
 (provide 'canon)
 ;;; canon.el ends here
