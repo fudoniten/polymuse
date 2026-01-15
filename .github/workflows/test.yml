@@ -1,0 +1,61 @@
+name: Run Tests
+
+on:
+  push:
+    branches: [ main, master, develop, claude/** ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        emacs-version:
+          - '29.3'
+          - 'snapshot'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Emacs
+      uses: purcell/setup-emacs@master
+      with:
+        version: ${{ matrix.emacs-version }}
+
+    - name: Install dependencies
+      run: |
+        emacs --version
+        emacs -batch -l package.el \
+          --eval "(require 'package)" \
+          --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)" \
+          --eval "(package-initialize)" \
+          --eval "(package-refresh-contents)" \
+          --eval "(package-install 'gptel)" \
+          --eval "(package-install 'markdown-mode)"
+
+    - name: Run typewrite tests
+      run: |
+        emacs -batch \
+          -l typewrite.el \
+          -l typewrite-test.el \
+          -f ert-run-tests-batch-and-exit
+
+    - name: Run canon tests
+      run: |
+        emacs -batch \
+          -l canon.el \
+          -l canon-test.el \
+          -f ert-run-tests-batch-and-exit
+
+    - name: Run polymuse tests
+      run: |
+        emacs -batch -l package.el \
+          --eval "(require 'package)" \
+          --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)" \
+          --eval "(package-initialize)" \
+          -l polymuse.el \
+          -l polymuse-test.el \
+          -f ert-run-tests-batch-and-exit
