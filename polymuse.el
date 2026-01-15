@@ -1179,7 +1179,7 @@ Returns a plist with :forward-context and :backward-context regions."
 (define-key polymuse-instructions-mode-map
             (kbd "C-c C-d") #'polymuse-close-instructions)
 
-(defcustom polymuse-default-interval 60
+(defcustom polymuse-default-interval 180
   "Default idle time (in seconds) between Polymuse reviews."
   :type 'number)
 
