@@ -155,13 +155,41 @@ or was active within this many seconds. This prevents generating reviews
 when the user is away from their desk. Default is 60 seconds."
   :type 'integer)
 
+(cl-defstruct polymuse-scheduler
+  "Protocol for scheduling review ticks.
+
+This allows tests to use a synchronous scheduler instead of real timers."
+  (start-fn nil)  ; (lambda (interval callback) ...) -> timer object
+  (stop-fn nil))  ; (lambda (timer) ...) -> void
+
+(defun polymuse--create-timer-scheduler ()
+  "Create the default timer-based scheduler for reviews."
+  (make-polymuse-scheduler
+   :start-fn (lambda (interval callback)
+               (run-with-timer interval interval callback))
+   :stop-fn (lambda (timer)
+              (when (timerp timer)
+                (cancel-timer timer)))))
+
+(defun polymuse--create-immediate-scheduler ()
+  "Create a scheduler for immediate synchronous execution (for testing).
+
+This scheduler immediately calls the callback without using timers."
+  (make-polymuse-scheduler
+   :start-fn (lambda (_interval callback)
+               (funcall callback)
+               'immediate-scheduler-token)
+   :stop-fn (lambda (_timer) nil)))
+
 (cl-defstruct polymuse-global-state
   "Global state container for Polymuse.
 
 This allows tests to isolate timer state by binding `polymuse--test-state'."
-  (timer nil))
+  (timer nil)
+  (scheduler nil)) ; polymuse-scheduler instance
 
-(defvar polymuse--default-global-state (make-polymuse-global-state)
+(defvar polymuse--default-global-state
+  (make-polymuse-global-state :scheduler (polymuse--create-timer-scheduler))
   "Default global state for Polymuse.")
 
 (defvar polymuse--test-global-state nil
@@ -871,6 +899,24 @@ review, or if it was modified within `polymuse-buffer-activity-timeout' seconds.
                   (message "skipping %s, review too recent or conditions not met"
                            (polymuse-review-state-id review)))))))))))
 
+(defsubst polymuse--valid-region-p (region)
+  "Return t if REGION is a valid region cons.
+
+A valid region is a cons of (BEG . END) where both are integers
+and BEG <= END."
+  (and (consp region)
+       (integerp (car region))
+       (integerp (cdr region))
+       (<= (car region) (cdr region))))
+
+(defsubst polymuse--region-empty-p (region)
+  "Return t if REGION represents an empty region.
+
+A region is empty if it is nil or if BEG = END."
+  (or (null region)
+      (and (consp region)
+           (= (car region) (cdr region)))))
+
 (defsubst polymuse--region-length (region)
   "Return the length of REGION (a cons of BEG . END), or 0 if nil."
   (if (and region (consp region))
@@ -882,6 +928,34 @@ review, or if it was modified within `polymuse-buffer-activity-timeout' seconds.
   (if (and region (consp region))
       (buffer-substring-no-properties (car region) (cdr region))
     ""))
+
+(defun polymuse--valid-prompt-p (prompt)
+  "Return t if PROMPT has the required structure.
+
+A valid prompt should be an alist with at least the following keys:
+  - review-request
+  - environment
+  - context
+  - current
+  - task"
+  (and (listp prompt)
+       (assq 'review-request prompt)
+       (assq 'environment prompt)
+       (assq 'context prompt)
+       (assq 'current prompt)
+       (assq 'task prompt)))
+
+(defun polymuse--valid-context-params-p (params)
+  "Return t if PARAMS is a valid context parameters plist.
+
+A valid context params plist should have at least:
+  - :mode-prompt
+  - :current-unit
+  - :major-mode"
+  (and (listp params)
+       (plist-member params :mode-prompt)
+       (plist-member params :current-unit)
+       (plist-member params :major-mode)))
 
 (defun polymuse--grab-buffer-tail (buffer n)
   "Return the last N lines from BUFFER as a string."
@@ -1289,12 +1363,14 @@ a plist containing:
 
 (defun polymuse--enable ()
   "Enable the Polymuse LLM live review mode."
-  (let ((state (polymuse--get-global-state)))
+  (let* ((state (polymuse--get-global-state))
+         (scheduler (or (polymuse-global-state-scheduler state)
+                        (polymuse--create-timer-scheduler))))
     (unless (polymuse-global-state-timer state)
       (setf (polymuse-global-state-timer state)
-            (run-with-timer polymuse-default-interval ;; How long to wait before the first review
-                            polymuse-default-interval ;; How long to pause between reviews
-                            #'polymuse--global-idle-tick))))
+            (funcall (polymuse-scheduler-start-fn scheduler)
+                     polymuse-default-interval
+                     #'polymuse--global-idle-tick))))
   (if (polymuse--code-mode-p)
       (setq polymuse--unit-grabber #'polymuse--get-unit-sexp
             polymuse--prev-context-grabber #'polymuse--get-context-before-point-sexps
@@ -1311,11 +1387,14 @@ a plist containing:
 
 (defun polymuse--disable ()
   "Disable the Polymuse LLM live review mode."
-  (let ((state (polymuse--get-global-state)))
+  (let* ((state (polymuse--get-global-state))
+         (scheduler (or (polymuse-global-state-scheduler state)
+                        (polymuse--create-timer-scheduler))))
     (when (and (polymuse-global-state-timer state)
                (not (cl-some (lambda (b) (with-current-buffer b polymuse-mode))
                              (buffer-list))))
-      (cancel-timer (polymuse-global-state-timer state))
+      (funcall (polymuse-scheduler-stop-fn scheduler)
+               (polymuse-global-state-timer state))
       (setf (polymuse-global-state-timer state) nil))))
 
 (defun polymuse--buffer-hash ()
@@ -1521,6 +1600,7 @@ Example:
 
 This creates a fresh state container for the duration of BODY,
 preventing tests from interfering with each other or with global state.
+Uses an immediate scheduler so tests don't depend on timers.
 
 Example:
   (polymuse-test-with-isolated-state
@@ -1529,7 +1609,9 @@ Example:
       ;; Test polymuse functionality without affecting global state
       ...))"
   (declare (indent 0))
-  `(let ((polymuse--test-global-state (make-polymuse-global-state)))
+  `(let ((polymuse--test-global-state
+          (make-polymuse-global-state
+           :scheduler (polymuse--create-immediate-scheduler))))
      ,@body))
 
 (defun polymuse-test-fixture-simple-context ()

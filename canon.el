@@ -75,20 +75,30 @@
   (canon--maybe-init))
 
 (defun canon--maybe-init ()
-  "Ensure `canon-file' is set, prompting if not."
-  (unless canon-file
+  "Ensure `canon-file' is set, prompting if not.
+
+In test mode (`canon-test-mode'), skips prompting and allows the test
+to set up the buffer manually."
+  (unless (or canon-file canon-test-mode)
     (setq-local canon-file
                 (read-file-name "Canon file: "
                                 default-directory
                                 "canon.org"
                                 nil nil)))
-  (canon--get-buffer))
+  (when canon-file
+    (canon--get-buffer)))
 
 (defvar-local canon-file nil
   "Canon file for the work being written.")
 
 (defvar-local canon--buffer nil
   "Buffer visiting the `canon-file'.")
+
+(defvar canon-test-mode nil
+  "When non-nil, canon operates in test mode.
+
+In test mode, canon-mode will not prompt for a file when initialized,
+allowing tests to set up buffers manually without interactive prompts.")
 
 (defun canon--get-buffer ()
   "Return the buffer visiting `canon-file', opening if needed."
@@ -104,21 +114,34 @@
         (canon-mode 1)))
     buf))
 
+(defun canon--org-find-heading (predicate)
+  "Find heading matching PREDICATE using org-map-entries.
+
+PREDICATE is a function called at each heading that should return
+non-nil if the heading matches. Returns point at the matching heading,
+or nil if no match is found.
+
+This is a wrapper around org-map-entries that allows for potential
+stubbing in tests if needed."
+  (catch 'found
+    (org-map-entries
+     (lambda ()
+       (when (funcall predicate)
+         (throw 'found (point))))
+     t 'file)))
+
 (defun canon--find-entity-heading (id &optional type)
   "Return point at heading with :ID: property = ID.
 
 If TYPE is non-nil, require that the heading title start with [TYPE]. ID
 and TYPE should be strings."
-  (catch 'found
-    (org-map-entries
-     (lambda ()
-       (when (and (equal (org-entry-get nil "ID") id)
-                  (or (not type)
-                      (string-match-p
-                       (format "\\[%s\\]" (regexp-quote type))
-                       (nth 4 (org-heading-components)))))
-         (throw 'found (point))))
-     t 'file)))
+  (canon--org-find-heading
+   (lambda ()
+     (and (equal (org-entry-get nil "ID") id)
+          (or (not type)
+              (string-match-p
+               (format "\\[%s\\]" (regexp-quote type))
+               (nth 4 (org-heading-components))))))))
 
 (defun canon--get-subheading-text (entity-pos subheading)
   "From ENTITY-POS, return text under SUBHEADING.
@@ -263,21 +286,30 @@ title starts with [TYPE]. Return point if found, or nil."
       (org-reveal)
       pos)))
 
+(defun canon--org-collect-headings-by-level (level)
+  "Collect all heading titles at LEVEL.
+
+Returns a list of heading title strings.
+
+This is a wrapper around org operations to allow for potential
+stubbing in tests if needed."
+  (org-with-wide-buffer
+   (goto-char (point-min))
+   (let ((headings '()))
+     (while (re-search-forward org-heading-regexp nil t)
+       (let* ((components (org-heading-components))
+              (h-level    (nth 0 components))
+              (title      (nth 4 components)))
+         (when (= h-level level)
+           (push title headings))))
+     (nreverse headings))))
+
 (defun canon--list-types ()
   "Return a list of type names from top-level headings in the canon file.
 
 Types are taken from level-1 Org headings. The returned list contains
 the types as a list of strings."
-  (org-with-wide-buffer
-   (goto-char (point-min))
-   (let ((types '()))
-     (while (re-search-forward org-heading-regexp nil t)
-       (let* ((components (org-heading-components))
-              (level      (nth 0 components))
-              (title      (nth 4 components)))
-         (when (= level 1)
-           (push title types))))
-     (delete-dups (nreverse types)))))
+  (delete-dups (canon--org-collect-headings-by-level 1)))
 
 (defun canon--ensure-one-blank-line (&optional buffer)
   "Ensure that from the current point in BUFFER, there is one full blank line."

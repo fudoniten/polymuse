@@ -58,14 +58,42 @@
   :type 'boolean
   :group 'typewrite)
 
+(cl-defstruct typewrite-scheduler
+  "Protocol for scheduling typewriter ticks.
+
+This allows tests to use a synchronous scheduler instead of real timers."
+  (start-fn nil)  ; (lambda (interval callback) ...) -> timer object
+  (stop-fn nil))  ; (lambda (timer) ...) -> void
+
+(defun typewrite--create-timer-scheduler ()
+  "Create the default timer-based scheduler."
+  (make-typewrite-scheduler
+   :start-fn (lambda (interval callback)
+               (run-at-time 0 interval callback))
+   :stop-fn (lambda (timer)
+              (when (timerp timer)
+                (cancel-timer timer)))))
+
+(defun typewrite--create-immediate-scheduler ()
+  "Create a scheduler for immediate synchronous execution (for testing).
+
+This scheduler immediately calls the callback without using timers."
+  (make-typewrite-scheduler
+   :start-fn (lambda (_interval callback)
+               (funcall callback)
+               'immediate-scheduler-token)
+   :stop-fn (lambda (_timer) nil)))
+
 (cl-defstruct typewrite-state
   "State container for typewriter jobs and timer.
 
 This allows tests to isolate state by binding `typewrite--test-state'."
   (jobs nil)
-  (timer nil))
+  (timer nil)
+  (scheduler nil)) ; typewrite-scheduler instance
 
-(defvar typewrite--default-state (make-typewrite-state)
+(defvar typewrite--default-state
+  (make-typewrite-state :scheduler (typewrite--create-timer-scheduler))
   "Default global state for typewriter.")
 
 (defvar typewrite--test-state nil
@@ -102,13 +130,17 @@ without using timers, making tests deterministic and fast.")
 (defun typewrite--ensure-timer (&optional interval)
   "Ensure the driver timer is running, at INTERVAL seconds (or default)."
   (let* ((seconds (or interval typewrite-tick-interval))
-         (state (typewrite--get-state)))
+         (state (typewrite--get-state))
+         (scheduler (or (typewrite-state-scheduler state)
+                        (typewrite--create-timer-scheduler))))
     (setq seconds (if (and (numberp seconds) (> seconds 0))
                       seconds
                     typewrite-tick-interval))
     (unless (typewrite-state-timer state)
       (setf (typewrite-state-timer state)
-            (run-at-time 0 seconds #'typewrite--tick)))))
+            (funcall (typewrite-scheduler-start-fn scheduler)
+                     seconds
+                     #'typewrite--tick)))))
 
 (defun typewrite--execute-job-synchronously (job)
   "Execute JOB immediately and synchronously, inserting all text at once.
@@ -206,8 +238,11 @@ If no jobs remain after this tick, cancel the timer and set it to nil."
     ;; if no jobs remain, stop the timer
     (when (and (null (typewrite-state-jobs state))
                (typewrite-state-timer state))
-      (cancel-timer (typewrite-state-timer state))
-      (setf (typewrite-state-timer state) nil))))
+      (let ((scheduler (or (typewrite-state-scheduler state)
+                           (typewrite--create-timer-scheduler))))
+        (funcall (typewrite-scheduler-stop-fn scheduler)
+                 (typewrite-state-timer state))
+        (setf (typewrite-state-timer state) nil)))))
 
 (defun typewrite--process-job (job now)
   "Advance JOB at time NOW.
@@ -285,13 +320,14 @@ Return JOB when it should remain active, or nil to drop it."
 This clears the job list and cancels the timer if it is currently running.
 Does *not* run any job `done-callback's."
   (interactive)
-  (let ((state (typewrite--get-state)))
+  (let* ((state (typewrite--get-state))
+         (scheduler (or (typewrite-state-scheduler state)
+                        (typewrite--create-timer-scheduler))))
     ;; Drop all jobs on the floor.
     (setf (typewrite-state-jobs state) nil)
     ;; Cancel the timer if it's still alive.
     (when-let ((timer (typewrite-state-timer state)))
-      (when (timerp timer)
-        (cancel-timer timer))
+      (funcall (typewrite-scheduler-stop-fn scheduler) timer)
       (setf (typewrite-state-timer state) nil))))
 
 ;;;;
@@ -303,6 +339,7 @@ Does *not* run any job `done-callback's."
 
 This creates a fresh state container for the duration of BODY,
 preventing tests from interfering with each other or with global state.
+Uses an immediate scheduler so tests don't depend on timers.
 
 Example:
   (typewrite-test-with-isolated-state
@@ -311,7 +348,9 @@ Example:
         (typewrite-enqueue-job \"test\" (current-buffer))
         (should (string= \"test\" (buffer-string))))))"
   (declare (indent 0))
-  `(let ((typewrite--test-state (make-typewrite-state)))
+  `(let ((typewrite--test-state
+          (make-typewrite-state
+           :scheduler (typewrite--create-immediate-scheduler))))
      ,@body))
 
 (defun typewrite-test-create-simple-job (text &optional cps)
