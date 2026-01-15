@@ -1585,9 +1585,6 @@ a plist containing:
               (list `(tools . ((instructions
                                 . "If you need more info, respond with JSON ONLY: {\"action\":\"tool-call\",\"tool\":\"<name>\",\"arguments\":{\"arg\":\"value\"}}. You'll receive the result and can then provide your review.")
                                (tool-list . ,tools-prompt)))))))
-      (environment
-       . ((editor     . "emacs")
-          (major_mode . ,(symbol-name major-mode-sym))))
       (context
        . ((backward-context . ,backward-context)
           (forward-context  . ,forward-context)
@@ -1596,7 +1593,7 @@ a plist containing:
       (current
        . ((focus-region . ,current-unit)))
       (task
-       . ((focus   . "Review `focus-region`, use `backward-context` and `forward-context` for reference only.")
+       . ((focus   . "Review `focus-region` acording tho the instructions in `buffer-prompt`, use `backward-context` and `forward-context` for reference only.")
           ,@(when include-previous-review
               (list '(previous . "Don't repeat points from `previous-review`; offer new insights only.")))
           ,@(when final-instructions
