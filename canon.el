@@ -134,14 +134,21 @@ stubbing in tests if needed."
   "Return point at heading with :ID: property = ID.
 
 If TYPE is non-nil, require that the heading title start with [TYPE]. ID
-and TYPE should be strings."
-  (canon--org-find-heading
-   (lambda ()
-     (and (equal (org-entry-get nil "ID") id)
-          (or (not type)
-              (string-match-p
-               (format "\\[%s\\]" (regexp-quote type))
-               (nth 4 (org-heading-components))))))))
+and TYPE should be strings.
+
+This function operates in the canon buffer context. It will automatically
+use the canon buffer if available."
+  (with-current-buffer (if (and (boundp 'canon--buffer)
+                                 (buffer-live-p canon--buffer))
+                           canon--buffer
+                         (current-buffer))
+    (canon--org-find-heading
+     (lambda ()
+       (and (equal (org-entry-get nil "ID") id)
+            (or (not type)
+                (string-match-p
+                 (format "\\[%s\\]" (regexp-quote type))
+                 (nth 4 (org-heading-components)))))))))
 
 (defun canon--get-subheading-text (entity-pos subheading)
   "From ENTITY-POS, return text under SUBHEADING.
@@ -474,7 +481,7 @@ PROP and VALUE are strings."
 
 This is a safe, read-only tool for Polymuse LLM integration."
   (with-current-buffer (canon--get-buffer)
-    (if-let ((text (canon--get-entity-text entity-id)))
+    (if-let* ((text (canon--get-entity-text entity-id)))
         (format "Entity: %s\n\n%s" entity-id text)
       (format "No entity found with ID: %s" entity-id))))
 
@@ -542,7 +549,7 @@ This is a safe, read-only tool for Polymuse LLM integration."
 This is a safe, append-only tool that never overwrites existing content.
 Suggestions are added to a `Suggestions' subheading for user review."
   (with-current-buffer (canon--get-buffer)
-    (if-let ((pos (canon--find-entity-heading entity-id)))
+    (if-let* ((pos (canon--find-entity-heading entity-id)))
         (progn
           (canon--append-to-subheading-text
            pos
@@ -561,7 +568,7 @@ This allows suggesting updates to specific sections (e.g., `Architecture',
 `Style Guide') without modifying the original content. The suggestion is
 added to a `Suggestions' subheading for user review."
   (with-current-buffer (canon--get-buffer)
-    (if-let ((pos (canon--find-entity-heading entity-id)))
+    (if-let* ((pos (canon--find-entity-heading entity-id)))
         (progn
           (canon--append-to-subheading-text
            pos
@@ -625,20 +632,24 @@ Within BODY, `canon-file' and `canon--buffer' are set to the temporary
 test canon. The temporary buffer and file are automatically cleaned up
 after BODY completes.
 
+The body runs in a temporary test buffer with buffer-local variables
+set up so that canon functions can find the test canon correctly.
+
 Example:
   (canon-test-with-temp-canon \"* Characters\\n\\n* Locations\"
     (canon-insert-entity \"Characters\" \"alice\")
     (should (canon-get-entity-text \"alice\")))"
   (declare (indent 1))
-  `(let* ((canon-setup (canon-test-create-buffer ,content))
-          (canon--buffer (car canon-setup))
-          (canon-file (cdr canon-setup)))
+  `(let* ((canon-setup (canon-test-create-buffer ,content)))
      (unwind-protect
-         (progn ,@body)
-       (when (buffer-live-p canon--buffer)
-         (kill-buffer canon--buffer))
-       (when (file-exists-p canon-file)
-         (delete-file canon-file)))))
+         (with-temp-buffer
+           (setq-local canon--buffer (car canon-setup))
+           (setq-local canon-file (cdr canon-setup))
+           ,@body)
+       (when (buffer-live-p (car canon-setup))
+         (kill-buffer (car canon-setup)))
+       (when (file-exists-p (cdr canon-setup))
+         (delete-file (cdr canon-setup))))))
 
 (defun canon-test-fixture-simple-canon ()
   "Create a simple test canon with common entity types.
