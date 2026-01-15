@@ -128,7 +128,8 @@ stubbing in tests if needed."
      (lambda ()
        (when (funcall predicate)
          (throw 'found (point))))
-     t 'file)))
+     t 'file)
+    nil))
 
 (defun canon--find-entity-heading (id &optional type)
   "Return point at heading with :ID: property = ID.
@@ -181,7 +182,9 @@ SUBHEADING is the entry title, minus the leading *s."
                 (concat "^\\*+ +" (regexp-quote subheading) "\\b") end t)
          ;; Create the subheading at end of subtree if missing
          (goto-char end)
-         (insert (format "\n*** %s\n" subheading)))
+         (insert (format "\n*** %s\n" subheading))
+         ;; Recalculate end after insertion since buffer has changed
+         (setq end (save-excursion (goto-char entity-pos) (org-end-of-subtree t t))))
        ;; Now we're on the subheading line
        (forward-line 1)
        (let* ((start (point))
@@ -209,9 +212,11 @@ entity subtree and NEW-TEXT will become its initial contents."
                 (concat "^\\*+ +" (regexp-quote subheading) "\\b") end t)
          (goto-char end)
          (insert (format "\n*** %s\n" subheading))
+         ;; Recalculate end after insertion since buffer has changed
+         (setq end (save-excursion (goto-char entity-pos) (org-end-of-subtree t t)))
          (forward-line 1))
        ;; Now we're on or just after the subheading line.
-       (when (looking-at "^\\*+") ; if we’re still on the heading line
+       (when (looking-at "^\\*+") ; if we're still on the heading line
          (forward-line 1))
        (let* ((body-start (point))
               (sub-end (or (save-excursion
@@ -221,7 +226,7 @@ entity subtree and NEW-TEXT will become its initial contents."
                            end)))
          ;; Jump to end of current body.
          (goto-char sub-end)
-         ;; If there is existing text and we’re not at BOL, add a newline
+         ;; If there is existing text and we're not at BOL, add a newline
          ;; so appended text starts on a fresh line.
          (unless (or (= body-start sub-end) (bolp))
            (insert "\n"))
@@ -339,7 +344,7 @@ the types as a list of strings."
        (goto-char (point-max))
        (canon--ensure-one-blank-line)
        (insert (format "* %s\n" type))
-       (setq found (line-beginning-position 0)))
+       (setq found (line-beginning-position)))
      found)))
 
 (defun canon--insert-entity-under-type (type id)
