@@ -181,6 +181,159 @@ or was active within this many seconds. This prevents generating reviews
 when the user is away from their desk. Default is 60 seconds."
   :type 'integer)
 
+;;;;
+;; EXAMPLE CONFIGURATIONS FOR POPULAR OLLAMA MODELS
+;;;;
+
+;; The settings below are optimized for models with ~8K context windows.
+;; Adjust based on your hardware and quality preferences.
+;;
+;; General guidelines:
+;; - Smaller models (3B-7B): Need more response space, less context
+;; - Larger models (8B+): Can handle more context, better instruction following
+;; - Code-specialized models: May benefit from more backward context (0.65-0.70)
+;; - General models: Balanced allocation (0.55-0.60)
+;;
+;; To use a configuration, add it to your init.el BEFORE enabling polymuse-mode.
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ Llama 3.2 3B - Fast, lightweight, good for quick feedback           │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Very fast responses, low resource usage
+;; Cons: Less sophisticated reasoning, may miss subtle issues
+;; Best for: Quick syntax checks, obvious bugs, simple refactoring suggestions
+;;
+;; (setq polymuse-max-prompt-characters 5500
+;;       polymuse-response-reserve-ratio 0.35  ; Needs more space to formulate response
+;;       polymuse-context-backward-ratio 0.55  ; Balanced context
+;;       polymuse-include-previous-review nil) ; Keep it simple
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ Llama 3.1 8B - Great balance of speed and capability                │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Good reasoning, fast enough, handles instructions well
+;; Cons: May still miss complex architectural issues
+;; Best for: Most use cases, daily coding, prose editing
+;;
+;; (setq polymuse-max-prompt-characters 7000
+;;       polymuse-response-reserve-ratio 0.28
+;;       polymuse-context-backward-ratio 0.60
+;;       polymuse-include-previous-review nil) ; Optional: set to t if model performs well
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ Mistral 7B v0.3 - Excellent for code, concise responses             │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Very good at code understanding, naturally concise
+;; Cons: Sometimes too brief, may need prompting for detail
+;; Best for: Code review, refactoring suggestions, API design
+;;
+;; (setq polymuse-max-prompt-characters 6800
+;;       polymuse-response-reserve-ratio 0.25  ; Concise by nature
+;;       polymuse-context-backward-ratio 0.62
+;;       polymuse-include-previous-review nil)
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ Qwen 2.5 Coder 7B - Code-specialized, excellent pattern recognition │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Trained on code, understands patterns, good library knowledge
+;; Cons: Less useful for prose, may over-engineer solutions
+;; Best for: Code review, finding bugs, suggesting standard libraries
+;;
+;; (setq polymuse-max-prompt-characters 7200
+;;       polymuse-response-reserve-ratio 0.27
+;;       polymuse-context-backward-ratio 0.68  ; Benefits from seeing more prior code
+;;       polymuse-include-previous-review nil)
+;;
+;; ;; Override prompts for more code-specific guidance:
+;; (setq polymuse-mode-prompts
+;;       '((prog-mode . "Review code in `focus-region`. Priority: (1) bugs/logic errors; (2) security issues (injection, validation); (3) performance problems; (4) better standard library usage. Suggest specific functions/patterns.")
+;;         (text-mode . "Review prose in `focus-region` for clarity and correctness. Keep feedback brief.")))
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ DeepSeek Coder 6.7B - Another strong code specialist                │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Excellent code understanding, good at explaining complex logic
+;; Cons: Can be verbose, may need shorter prompt to fit context
+;; Best for: Understanding complex code, architecture suggestions
+;;
+;; (setq polymuse-max-prompt-characters 6500
+;;       polymuse-response-reserve-ratio 0.32  ; Tends toward longer responses
+;;       polymuse-context-backward-ratio 0.65
+;;       polymuse-include-previous-review nil)
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ Gemma 2 9B - Strong general-purpose model                           │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Good at both code and prose, balanced feedback
+;; Cons: Slower than 7B models, higher resource usage
+;; Best for: Mixed workflows (code + documentation), thoughtful analysis
+;;
+;; (setq polymuse-max-prompt-characters 7500
+;;       polymuse-response-reserve-ratio 0.28
+;;       polymuse-context-backward-ratio 0.58
+;;       polymuse-include-previous-review t)  ; Handles conversation history well
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ Phi-3 Mini (3.8B) - Efficient small model with strong capabilities  │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Punches above its weight class, very efficient
+;; Cons: Smaller context window, may struggle with very large functions
+;; Best for: Resource-constrained systems, quick feedback loops
+;;
+;; (setq polymuse-max-prompt-characters 5000
+;;       polymuse-response-reserve-ratio 0.35
+;;       polymuse-context-backward-ratio 0.58
+;;       polymuse-include-previous-review nil)
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ CodeLlama 7B - Meta's code-specialized Llama variant                │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Good code completion context, understands patterns
+;; Cons: Older model, may miss modern library conventions
+;; Best for: Legacy code review, learning from existing patterns
+;;
+;; (setq polymuse-max-prompt-characters 6800
+;;       polymuse-response-reserve-ratio 0.30
+;;       polymuse-context-backward-ratio 0.70  ; Really benefits from prior context
+;;       polymuse-include-previous-review nil)
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ CUSTOM CONFIGURATION TEMPLATE                                       │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Use this template to tune settings for your specific model:
+;;
+;; (setq polymuse-max-prompt-characters 7000    ; Start here, adjust down if responses truncate
+;;       polymuse-response-reserve-ratio 0.28    ; Increase if responses are cut off
+;;       polymuse-context-backward-ratio 0.60    ; Increase if model seems to lack prior context
+;;       polymuse-include-previous-review nil)   ; Try 't' if model can handle it
+;;
+;; Debug your settings with:
+;; (setq polymuse-debug t)
+;; Then check the *polymuse-debug* buffer to see actual prompt sizes.
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ ADVANCED: Per-mode configurations                                   │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; You can set different limits for different major modes:
+;;
+;; (defun my-polymuse-config-hook ()
+;;   "Configure Polymuse based on major mode."
+;;   (pcase major-mode
+;;     ;; Emacs Lisp: smaller sexps, can afford more context
+;;     ('emacs-lisp-mode
+;;      (setq-local polymuse-max-prompt-characters 8000
+;;                  polymuse-context-backward-ratio 0.65))
+;;     ;; JavaScript: larger functions, need more for current focus
+;;     ('js-mode
+;;      (setq-local polymuse-max-prompt-characters 6500
+;;                  polymuse-context-backward-ratio 0.55))
+;;     ;; Prose: balanced approach
+;;     ('markdown-mode
+;;      (setq-local polymuse-max-prompt-characters 7500
+;;                  polymuse-context-backward-ratio 0.50))))
+;;
+;; (add-hook 'polymuse-mode-hook #'my-polymuse-config-hook)
+
 (cl-defstruct polymuse-scheduler
   "Protocol for scheduling review ticks.
 
