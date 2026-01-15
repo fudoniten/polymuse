@@ -912,16 +912,17 @@ If the server is unreachable, you may experience UI freezing."
          (handler  (lambda (resp info)
                      (polymuse--debug-log "INFO: %s" info)
                      (polymuse--debug-log "\n\nRESPONSE:\n\n%s\n\nEND RESPONSE\n\n" resp)
-                     (when callback (funcall callback resp info)))))
+                     (when callback (funcall callback resp info))))
+         (request-json (json-serialize request)))
+    (when polymuse-debug
+      (polymuse--debug-log "\n\nREQUEST:\n\n%s\n\nEND REQUEST\n\n"
+                           (polymuse--format-json request-json)))
     (let* ((gptel-backend     executor)
            (gptel-model       model)
            (gptel-temperature temperature)
-           (result (gptel-request request
+           (result (gptel-request request-json
                      :system   system
                      :callback handler)))
-      (when polymuse-debug
-        (polymuse--debug-log "\n\nREQUEST:\n\n%s\n\nEND REQUEST\n\n"
-                             (polymuse--format-json (json-serialize request))))
       result)))
 
 (cl-defmethod polymuse-request-review ((backend polymuse-mock-backend) request &rest args)
