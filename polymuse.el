@@ -115,6 +115,18 @@
   "Number of previous lines of review to include with the prompt."
   :type 'integer)
 
+(defcustom polymuse-include-previous-review nil
+  "Whether to include previous review content in the prompt.
+
+When non-nil, the prompt will include the last
+`polymuse-default-review-context-lines' lines of the previous review
+as context, with instructions not to repeat previous points.
+
+When nil (the default), previous reviews are not included. This is useful
+for simpler models that tend to revise previous reviews rather than
+generate new ones."
+  :type 'boolean)
+
 (defcustom polymuse-default-buffer-size-limit 10000
   "Default maximum size for Polymuse review buffers.
 
@@ -1018,8 +1030,8 @@ Returns a plist with :forward-context and :backward-context regions."
          (forward-context  (plist-get context-regions :forward-context))
          (backward-context (plist-get context-regions :backward-context))
          (out-buffer            (polymuse-review-state-output-buffer review))
-         (existing-review-lines (polymuse-review-state-review-context review))
-         (existing-review       (polymuse--grab-buffer-tail out-buffer existing-review-lines)))
+         (previous-review-lines (polymuse-review-state-review-context review))
+         (previous-review       (polymuse--grab-buffer-tail out-buffer previous-review-lines)))
     `((review-request
        . ((mode-prompt       . ,mode-prompt)
           (buffer-prompt     . ,local-prompt)
@@ -1045,14 +1057,20 @@ Returns a plist with :forward-context and :backward-context regions."
       (context
        . ((backward-context . ,(polymuse--region-string backward-context))
           (forward-context  . ,(polymuse--region-string forward-context))
-          (existing-review  . ,existing-review)))
+          ,@(when polymuse-include-previous-review
+              (list `(previous-review . ,previous-review)))))
       (current
        . ((focus-region . ,(polymuse--region-string current-unit))))
       (task
        . ((focus   . "Prioritize the text in the `current.focus-region' field.")
-          (details . ,(string-join '("Analyze and provide feedback based primarily on"
-                                     "the current editing focus-region, using the earlier"
-                                     "and later context for reference.")
+          (details . ,(string-join (append
+                                    '("Analyze and provide feedback based primarily on"
+                                      "the current editing focus-region, using the earlier"
+                                      "and later context for reference.")
+                                    (when polymuse-include-previous-review
+                                      '("The `context.previous-review` field contains earlier feedback"
+                                        "provided for context only. Do not repeat or revise points from"
+                                        "the previous review; focus on new observations and insights.")))
                                    " "))
           ,@(when polymuse-final-instructions
               (list `(instructions . ,polymuse-final-instructions))))))))
