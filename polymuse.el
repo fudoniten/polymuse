@@ -108,8 +108,34 @@
   :type 'string)
 
 (defcustom polymuse-max-prompt-characters 10000
-  "Maximum length of a prompt, in characters."
+  "Maximum length of a prompt, in characters.
+
+For Ollama models with 8K context (~6K usable tokens):
+- Set to 6000-8000 (assuming ~4 chars per token)
+- Leaves room for model response and overhead
+
+The actual tokens used will be lower than character count,
+but this provides a safe margin."
   :type 'integer)
+
+(defcustom polymuse-context-backward-ratio 0.60
+  "Ratio of context budget to allocate to backward context.
+
+The remaining context space (after response reserve) goes to forward context.
+Default 0.60 means 60% backward, 40% forward.
+
+Backward context (code/text before cursor) is typically more relevant for
+understanding what the user is working on. Increase this if you find the
+model lacks enough prior context. Decrease if you need more forward lookahead."
+  :type 'float)
+
+(defcustom polymuse-response-reserve-ratio 0.25
+  "Ratio of available context to reserve for model response.
+
+Default 0.25 means 25% of available space is reserved for the model's output,
+preventing response truncation. For models with small context windows, you may
+want to increase this. For larger models, you can decrease it to send more context."
+  :type 'float)
 
 (defcustom polymuse-default-review-context-lines 20
   "Number of previous lines of review to include with the prompt."
@@ -593,15 +619,18 @@ mock response, making it suitable for testing without network calls."
 
 (defcustom polymuse-system-prompt
   (string-join
-   '("You are an over-the-shoulder assistant. Respond in markdown format or"
-     "in plain text.")
+   '("You are an expert programming assistant providing real-time feedback as the user writes."
+     "Be concise, specific, and actionable. Focus on insights the user might miss, not obvious facts."
+     "Prioritize: bugs/errors > design issues > style/clarity > minor improvements."
+     "If you have nothing substantive to add, say so briefly rather than stating the obvious."
+     "Keep responses under 200 words unless addressing complex issues.")
    " ")
   "Base system prompt for polymuse."
   :type 'string)
 
 (defcustom polymuse-mode-prompts
-  '((prog-mode . "Provide feedback on the code in the `current.focus-region' field below. Focus on clarity, reuse, improvements, library suggestions and general quality. This is part of an ongoing stream of advice.")
-    (text-mode . "Provide feedback or react to the prose content in the `current.focus-region' field. You are providing an ongoing stream of feedback."))
+  '((prog-mode . "Review the code in `focus-region`. Check for: (1) bugs, edge cases, or incorrect logic; (2) potential errors or exceptions not handled; (3) unclear naming or confusing structure; (4) opportunities to simplify or use better patterns/libraries. Ignore trivial style issues.")
+    (text-mode . "Review the prose in `focus-region` for: (1) clarity and flow; (2) awkward phrasing or ambiguity; (3) logical gaps or weak arguments; (4) tone consistency. Focus on meaning and readability, not nitpicky grammar."))
   "Mode-specific prompt for the polymuse over-the-shoulder assistant."
   :type '(alist :key-type symbol :value-type string))
 
@@ -1114,25 +1143,35 @@ MAX-CHARS is the total character budget.
 MODE-PROMPT and LOCAL-PROMPT are the base prompts.
 CURRENT-UNIT is the cons (BEG . END) of the current focus region.
 
-Returns a plist with :forward-context and :backward-context regions."
+Returns a plist with :forward-context and :backward-context regions.
+
+For small context models (~8K), this allocates context as:
+- 25% for response space (critical!)
+- 60% backward context (typically more relevant)
+- 15% forward context (useful but less critical)"
   (let* ((prompt-size   (+ (length mode-prompt)
                            (length local-prompt)
-                           80))
+                           200))  ; overhead for JSON structure
          (current-len   (polymuse--region-length current-unit))
-         (context-space (max 0 (- max-chars prompt-size current-len)))
-         (forward-budget  (max 0 (floor context-space 2)))
-         (forward-context (and (> forward-budget 0)
-                               (funcall polymuse--next-context-grabber
-                                        forward-budget
-                                        nil
-                                        (and current-unit (cdr current-unit)))))
-         (forward-len     (polymuse--region-length forward-context))
-         (backward-budget (max 0 (- context-space forward-len)))
+         ;; Reserve space for model response to avoid truncation
+         (available     (- max-chars prompt-size current-len))
+         (response-reserve (floor (* available polymuse-response-reserve-ratio)))
+         (context-space (max 0 (- available response-reserve)))
+         ;; Allocate to backward context per configuration
+         (backward-budget (max 0 (floor (* context-space polymuse-context-backward-ratio))))
          (backward-context (and (> backward-budget 0)
                                 (funcall polymuse--prev-context-grabber
                                          backward-budget
                                          nil
-                                         (and current-unit (car current-unit))))))
+                                         (and current-unit (car current-unit)))))
+         (backward-len    (polymuse--region-length backward-context))
+         ;; Give remaining space to forward context
+         (forward-budget  (max 0 (- context-space backward-len)))
+         (forward-context (and (> forward-budget 0)
+                               (funcall polymuse--next-context-grabber
+                                        forward-budget
+                                        nil
+                                        (and current-unit (cdr current-unit))))))
     (list :forward-context forward-context
           :backward-context backward-context)))
 
@@ -1167,19 +1206,7 @@ a plist containing:
           (buffer-prompt     . ,local-prompt)
           ,@(when tools-prompt
               (list `(tools . ((instructions
-                                . ,(string-join '("You may call a tool for more information instead of replying directly."
-                                                  "If you want more information, reply ONLY with a JSON request of the form:"
-                                                  "`{"
-                                                  "\"action\":\"tool-call\","
-                                                  "\"tool\":\"<tool-name>\","
-                                                  "\"arguments\": {"
-                                                  "\"arg0\": \"<value>\","
-                                                  "\"arg1\": \"<value>\""
-                                                  "}"
-                                                  "}`"
-                                                  "The result of the tool call will be added to the request and"
-                                                  "the resulting request will be passed back to you.")
-                                                " "))
+                                . "If you need more info, respond with JSON ONLY: {\"action\":\"tool-call\",\"tool\":\"<name>\",\"arguments\":{\"arg\":\"value\"}}. You'll receive the result and can then provide your review.")
                                (tool-list . ,tools-prompt)))))))
       (environment
        . ((editor     . "emacs")
@@ -1192,16 +1219,9 @@ a plist containing:
       (current
        . ((focus-region . ,current-unit)))
       (task
-       . ((focus   . "Prioritize the text in the `current.focus-region' field.")
-          (details . ,(string-join (append
-                                    '("Analyze and provide feedback based primarily on"
-                                      "the current editing focus-region, using the earlier"
-                                      "and later context for reference.")
-                                    (when include-previous-review
-                                      '("The `context.previous-review` field contains earlier feedback"
-                                        "provided for context only. Do not repeat or revise points from"
-                                        "the previous review; focus on new observations and insights.")))
-                                   " "))
+       . ((focus   . "Review `focus-region`, use `backward-context` and `forward-context` for reference only.")
+          ,@(when include-previous-review
+              (list '(previous . "Don't repeat points from `previous-review`; offer new insights only.")))
           ,@(when final-instructions
               (list `(instructions . ,final-instructions))))))))
 
