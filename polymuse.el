@@ -108,8 +108,34 @@
   :type 'string)
 
 (defcustom polymuse-max-prompt-characters 10000
-  "Maximum length of a prompt, in characters."
+  "Maximum length of a prompt, in characters.
+
+For Ollama models with 8K context (~6K usable tokens):
+- Set to 6000-8000 (assuming ~4 chars per token)
+- Leaves room for model response and overhead
+
+The actual tokens used will be lower than character count,
+but this provides a safe margin."
   :type 'integer)
+
+(defcustom polymuse-context-backward-ratio 0.60
+  "Ratio of context budget to allocate to backward context.
+
+The remaining context space (after response reserve) goes to forward context.
+Default 0.60 means 60% backward, 40% forward.
+
+Backward context (code/text before cursor) is typically more relevant for
+understanding what the user is working on. Increase this if you find the
+model lacks enough prior context. Decrease if you need more forward lookahead."
+  :type 'float)
+
+(defcustom polymuse-response-reserve-ratio 0.25
+  "Ratio of available context to reserve for model response.
+
+Default 0.25 means 25% of available space is reserved for the model's output,
+preventing response truncation. For models with small context windows, you may
+want to increase this. For larger models, you can decrease it to send more context."
+  :type 'float)
 
 (defcustom polymuse-default-review-context-lines 20
   "Number of previous lines of review to include with the prompt."
@@ -154,6 +180,381 @@ Reviews will only run if the buffer was active since the last review,
 or was active within this many seconds. This prevents generating reviews
 when the user is away from their desk. Default is 60 seconds."
   :type 'integer)
+
+;;;;
+;; MODEL CONFIGURATION PRESETS
+;;;;
+
+(cl-defstruct polymuse-config
+  "Configuration preset for a specific LLM model.
+
+Each preset encapsulates the optimal settings for a particular model,
+including context limits, allocation ratios, and whether to include
+previous review history."
+  name                      ; Symbol identifier (e.g., 'llama-3.1-8b)
+  description               ; Human-readable description
+  max-prompt-characters     ; Maximum prompt length in characters
+  response-reserve-ratio    ; Ratio of space reserved for response
+  context-backward-ratio    ; Ratio of context allocated backward
+  include-previous-review   ; Whether to include review history
+  mode-prompts)             ; Optional custom mode-specific prompts
+
+(defvar polymuse-config-presets
+  `((default
+     . ,(make-polymuse-config
+         :name 'default
+         :description "Conservative defaults for 8K context models"
+         :max-prompt-characters 7000
+         :response-reserve-ratio 0.28
+         :context-backward-ratio 0.60
+         :include-previous-review nil
+         :mode-prompts nil))
+
+    (llama-3.2-3b
+     . ,(make-polymuse-config
+         :name 'llama-3.2-3b
+         :description "Llama 3.2 3B - Fast, lightweight, good for quick feedback"
+         :max-prompt-characters 5500
+         :response-reserve-ratio 0.35
+         :context-backward-ratio 0.55
+         :include-previous-review nil
+         :mode-prompts nil))
+
+    (llama-3.1-8b
+     . ,(make-polymuse-config
+         :name 'llama-3.1-8b
+         :description "Llama 3.1 8B - Great balance of speed and capability (recommended)"
+         :max-prompt-characters 7000
+         :response-reserve-ratio 0.28
+         :context-backward-ratio 0.60
+         :include-previous-review nil
+         :mode-prompts nil))
+
+    (mistral-7b
+     . ,(make-polymuse-config
+         :name 'mistral-7b
+         :description "Mistral 7B v0.3 - Excellent for code, concise responses"
+         :max-prompt-characters 6800
+         :response-reserve-ratio 0.25
+         :context-backward-ratio 0.62
+         :include-previous-review nil
+         :mode-prompts nil))
+
+    (qwen-2.5-coder-7b
+     . ,(make-polymuse-config
+         :name 'qwen-2.5-coder-7b
+         :description "Qwen 2.5 Coder 7B - Code-specialized, excellent pattern recognition"
+         :max-prompt-characters 7200
+         :response-reserve-ratio 0.27
+         :context-backward-ratio 0.68
+         :include-previous-review nil
+         :mode-prompts '((prog-mode . "Review code in `focus-region`. Priority: (1) bugs/logic errors; (2) security issues (injection, validation); (3) performance problems; (4) better standard library usage. Suggest specific functions/patterns.")
+                         (text-mode . "Review prose in `focus-region` for clarity and correctness. Keep feedback brief."))))
+
+    (deepseek-coder-6.7b
+     . ,(make-polymuse-config
+         :name 'deepseek-coder-6.7b
+         :description "DeepSeek Coder 6.7B - Excellent code understanding, good at explaining complex logic"
+         :max-prompt-characters 6500
+         :response-reserve-ratio 0.32
+         :context-backward-ratio 0.65
+         :include-previous-review nil
+         :mode-prompts nil))
+
+    (gemma-2-9b
+     . ,(make-polymuse-config
+         :name 'gemma-2-9b
+         :description "Gemma 2 9B - Strong general-purpose model for code and prose"
+         :max-prompt-characters 7500
+         :response-reserve-ratio 0.28
+         :context-backward-ratio 0.58
+         :include-previous-review t
+         :mode-prompts nil))
+
+    (phi-3-mini
+     . ,(make-polymuse-config
+         :name 'phi-3-mini
+         :description "Phi-3 Mini (3.8B) - Efficient small model with strong capabilities"
+         :max-prompt-characters 5000
+         :response-reserve-ratio 0.35
+         :context-backward-ratio 0.58
+         :include-previous-review nil
+         :mode-prompts nil))
+
+    (codellama-7b
+     . ,(make-polymuse-config
+         :name 'codellama-7b
+         :description "CodeLlama 7B - Meta's code-specialized Llama variant"
+         :max-prompt-characters 6800
+         :response-reserve-ratio 0.30
+         :context-backward-ratio 0.70
+         :include-previous-review nil
+         :mode-prompts nil)))
+  "Alist of predefined configuration presets for popular Ollama models.
+
+Each preset is optimized for a specific model's context window size,
+response patterns, and typical use cases. Use `polymuse-use-config'
+to apply a preset.")
+
+(defvar polymuse-current-config 'default
+  "Currently active configuration preset (symbol).")
+
+(defun polymuse-get-config (config-name)
+  "Get configuration preset CONFIG-NAME from `polymuse-config-presets'.
+
+Returns a `polymuse-config' struct or nil if not found."
+  (cdr (assq config-name polymuse-config-presets)))
+
+(defun polymuse-apply-config (config &optional buffer)
+  "Apply CONFIG (a `polymuse-config' struct) to BUFFER or current buffer.
+
+Sets buffer-local variables according to the configuration preset.
+If BUFFER is nil, applies to the current buffer."
+  (with-current-buffer (or buffer (current-buffer))
+    (setq-local polymuse-max-prompt-characters
+                (polymuse-config-max-prompt-characters config))
+    (setq-local polymuse-response-reserve-ratio
+                (polymuse-config-response-reserve-ratio config))
+    (setq-local polymuse-context-backward-ratio
+                (polymuse-config-context-backward-ratio config))
+    (setq-local polymuse-include-previous-review
+                (polymuse-config-include-previous-review config))
+    (when (polymuse-config-mode-prompts config)
+      (setq-local polymuse-mode-prompts
+                  (polymuse-config-mode-prompts config)))
+    (setq-local polymuse-current-config
+                (polymuse-config-name config))))
+
+(defun polymuse-use-config (config-name)
+  "Switch to configuration preset CONFIG-NAME.
+
+CONFIG-NAME should be a symbol like 'llama-3.1-8b or 'mistral-7b.
+See `polymuse-config-presets' for available presets.
+
+This sets buffer-local variables, so different buffers can use
+different configurations."
+  (interactive
+   (list (intern (completing-read
+                  "Polymuse config: "
+                  (mapcar (lambda (entry)
+                            (let* ((config (cdr entry))
+                                   (name (symbol-name (polymuse-config-name config)))
+                                   (desc (polymuse-config-description config)))
+                              (cons (format "%-20s - %s" name desc) (car entry))))
+                          polymuse-config-presets)
+                  nil t))))
+  (let ((config (polymuse-get-config config-name)))
+    (unless config
+      (user-error "Unknown configuration preset: %s" config-name))
+    (polymuse-apply-config config)
+    (message "Polymuse config: %s - %s"
+             (polymuse-config-name config)
+             (polymuse-config-description config))))
+
+(defun polymuse-show-current-config ()
+  "Display the current Polymuse configuration settings."
+  (interactive)
+  (let ((config-name (if (boundp 'polymuse-current-config)
+                         polymuse-current-config
+                       'default)))
+    (message "Polymuse config: %s | prompt-chars=%d | response-reserve=%.2f | backward-ratio=%.2f | prev-review=%s"
+             config-name
+             polymuse-max-prompt-characters
+             polymuse-response-reserve-ratio
+             polymuse-context-backward-ratio
+             polymuse-include-previous-review)))
+
+(defun polymuse-list-configs ()
+  "Display all available configuration presets."
+  (interactive)
+  (let ((buf (get-buffer-create "*Polymuse Configurations*")))
+    (with-current-buffer buf
+      (erase-buffer)
+      (insert "# Polymuse Configuration Presets\n\n")
+      (insert "Use M-x polymuse-use-config to switch between these presets:\n\n")
+      (dolist (entry polymuse-config-presets)
+        (let* ((config (cdr entry))
+               (current-p (eq (polymuse-config-name config) polymuse-current-config)))
+          (insert (format "%s%-20s - %s\n"
+                          (if current-p "* " "  ")
+                          (polymuse-config-name config)
+                          (polymuse-config-description config)))
+          (insert (format "  max-chars: %d | response-reserve: %.2f | backward: %.2f | prev-review: %s\n\n"
+                          (polymuse-config-max-prompt-characters config)
+                          (polymuse-config-response-reserve-ratio config)
+                          (polymuse-config-context-backward-ratio config)
+                          (polymuse-config-include-previous-review config)))))
+      (goto-char (point-min))
+      (help-mode))
+    (display-buffer buf)))
+
+;;;;
+;; EXAMPLE CONFIGURATIONS FOR POPULAR OLLAMA MODELS
+;;;;
+
+;; NOTE: The configuration examples below are now available as presets!
+;; Instead of copying these settings manually, use:
+;;
+;;   M-x polymuse-use-config RET llama-3.1-8b RET
+;;
+;; Or in your init.el:
+;;
+;;   (add-hook 'polymuse-mode-hook
+;;             (lambda () (polymuse-use-config 'llama-3.1-8b)))
+;;
+;; Use M-x polymuse-list-configs to see all available presets.
+;;
+;; The examples below are kept for reference and for understanding
+;; how to create custom configurations.
+
+;; The settings below are optimized for models with ~8K context windows.
+;; Adjust based on your hardware and quality preferences.
+;;
+;; General guidelines:
+;; - Smaller models (3B-7B): Need more response space, less context
+;; - Larger models (8B+): Can handle more context, better instruction following
+;; - Code-specialized models: May benefit from more backward context (0.65-0.70)
+;; - General models: Balanced allocation (0.55-0.60)
+;;
+;; To use a configuration, add it to your init.el BEFORE enabling polymuse-mode.
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ Llama 3.2 3B - Fast, lightweight, good for quick feedback           │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Very fast responses, low resource usage
+;; Cons: Less sophisticated reasoning, may miss subtle issues
+;; Best for: Quick syntax checks, obvious bugs, simple refactoring suggestions
+;;
+;; (setq polymuse-max-prompt-characters 5500
+;;       polymuse-response-reserve-ratio 0.35  ; Needs more space to formulate response
+;;       polymuse-context-backward-ratio 0.55  ; Balanced context
+;;       polymuse-include-previous-review nil) ; Keep it simple
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ Llama 3.1 8B - Great balance of speed and capability                │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Good reasoning, fast enough, handles instructions well
+;; Cons: May still miss complex architectural issues
+;; Best for: Most use cases, daily coding, prose editing
+;;
+;; (setq polymuse-max-prompt-characters 7000
+;;       polymuse-response-reserve-ratio 0.28
+;;       polymuse-context-backward-ratio 0.60
+;;       polymuse-include-previous-review nil) ; Optional: set to t if model performs well
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ Mistral 7B v0.3 - Excellent for code, concise responses             │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Very good at code understanding, naturally concise
+;; Cons: Sometimes too brief, may need prompting for detail
+;; Best for: Code review, refactoring suggestions, API design
+;;
+;; (setq polymuse-max-prompt-characters 6800
+;;       polymuse-response-reserve-ratio 0.25  ; Concise by nature
+;;       polymuse-context-backward-ratio 0.62
+;;       polymuse-include-previous-review nil)
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ Qwen 2.5 Coder 7B - Code-specialized, excellent pattern recognition │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Trained on code, understands patterns, good library knowledge
+;; Cons: Less useful for prose, may over-engineer solutions
+;; Best for: Code review, finding bugs, suggesting standard libraries
+;;
+;; (setq polymuse-max-prompt-characters 7200
+;;       polymuse-response-reserve-ratio 0.27
+;;       polymuse-context-backward-ratio 0.68  ; Benefits from seeing more prior code
+;;       polymuse-include-previous-review nil)
+;;
+;; ;; Override prompts for more code-specific guidance:
+;; (setq polymuse-mode-prompts
+;;       '((prog-mode . "Review code in `focus-region`. Priority: (1) bugs/logic errors; (2) security issues (injection, validation); (3) performance problems; (4) better standard library usage. Suggest specific functions/patterns.")
+;;         (text-mode . "Review prose in `focus-region` for clarity and correctness. Keep feedback brief.")))
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ DeepSeek Coder 6.7B - Another strong code specialist                │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Excellent code understanding, good at explaining complex logic
+;; Cons: Can be verbose, may need shorter prompt to fit context
+;; Best for: Understanding complex code, architecture suggestions
+;;
+;; (setq polymuse-max-prompt-characters 6500
+;;       polymuse-response-reserve-ratio 0.32  ; Tends toward longer responses
+;;       polymuse-context-backward-ratio 0.65
+;;       polymuse-include-previous-review nil)
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ Gemma 2 9B - Strong general-purpose model                           │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Good at both code and prose, balanced feedback
+;; Cons: Slower than 7B models, higher resource usage
+;; Best for: Mixed workflows (code + documentation), thoughtful analysis
+;;
+;; (setq polymuse-max-prompt-characters 7500
+;;       polymuse-response-reserve-ratio 0.28
+;;       polymuse-context-backward-ratio 0.58
+;;       polymuse-include-previous-review t)  ; Handles conversation history well
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ Phi-3 Mini (3.8B) - Efficient small model with strong capabilities  │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Punches above its weight class, very efficient
+;; Cons: Smaller context window, may struggle with very large functions
+;; Best for: Resource-constrained systems, quick feedback loops
+;;
+;; (setq polymuse-max-prompt-characters 5000
+;;       polymuse-response-reserve-ratio 0.35
+;;       polymuse-context-backward-ratio 0.58
+;;       polymuse-include-previous-review nil)
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ CodeLlama 7B - Meta's code-specialized Llama variant                │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Pros: Good code completion context, understands patterns
+;; Cons: Older model, may miss modern library conventions
+;; Best for: Legacy code review, learning from existing patterns
+;;
+;; (setq polymuse-max-prompt-characters 6800
+;;       polymuse-response-reserve-ratio 0.30
+;;       polymuse-context-backward-ratio 0.70  ; Really benefits from prior context
+;;       polymuse-include-previous-review nil)
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ CUSTOM CONFIGURATION TEMPLATE                                       │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; Use this template to tune settings for your specific model:
+;;
+;; (setq polymuse-max-prompt-characters 7000    ; Start here, adjust down if responses truncate
+;;       polymuse-response-reserve-ratio 0.28    ; Increase if responses are cut off
+;;       polymuse-context-backward-ratio 0.60    ; Increase if model seems to lack prior context
+;;       polymuse-include-previous-review nil)   ; Try 't' if model can handle it
+;;
+;; Debug your settings with:
+;; (setq polymuse-debug t)
+;; Then check the *polymuse-debug* buffer to see actual prompt sizes.
+
+;; ┌─────────────────────────────────────────────────────────────────────┐
+;; │ ADVANCED: Per-mode configurations                                   │
+;; └─────────────────────────────────────────────────────────────────────┘
+;; You can set different limits for different major modes:
+;;
+;; (defun my-polymuse-config-hook ()
+;;   "Configure Polymuse based on major mode."
+;;   (pcase major-mode
+;;     ;; Emacs Lisp: smaller sexps, can afford more context
+;;     ('emacs-lisp-mode
+;;      (setq-local polymuse-max-prompt-characters 8000
+;;                  polymuse-context-backward-ratio 0.65))
+;;     ;; JavaScript: larger functions, need more for current focus
+;;     ('js-mode
+;;      (setq-local polymuse-max-prompt-characters 6500
+;;                  polymuse-context-backward-ratio 0.55))
+;;     ;; Prose: balanced approach
+;;     ('markdown-mode
+;;      (setq-local polymuse-max-prompt-characters 7500
+;;                  polymuse-context-backward-ratio 0.50))))
+;;
+;; (add-hook 'polymuse-mode-hook #'my-polymuse-config-hook)
 
 (cl-defstruct polymuse-scheduler
   "Protocol for scheduling review ticks.
@@ -593,15 +994,18 @@ mock response, making it suitable for testing without network calls."
 
 (defcustom polymuse-system-prompt
   (string-join
-   '("You are an over-the-shoulder assistant. Respond in markdown format or"
-     "in plain text.")
+   '("You are an expert programming assistant providing real-time feedback as the user writes."
+     "Be concise, specific, and actionable. Focus on insights the user might miss, not obvious facts."
+     "Prioritize: bugs/errors > design issues > style/clarity > minor improvements."
+     "If you have nothing substantive to add, say so briefly rather than stating the obvious."
+     "Keep responses under 200 words unless addressing complex issues.")
    " ")
   "Base system prompt for polymuse."
   :type 'string)
 
 (defcustom polymuse-mode-prompts
-  '((prog-mode . "Provide feedback on the code in the `current.focus-region' field below. Focus on clarity, reuse, improvements, library suggestions and general quality. This is part of an ongoing stream of advice.")
-    (text-mode . "Provide feedback or react to the prose content in the `current.focus-region' field. You are providing an ongoing stream of feedback."))
+  '((prog-mode . "Review the code in `focus-region`. Check for: (1) bugs, edge cases, or incorrect logic; (2) potential errors or exceptions not handled; (3) unclear naming or confusing structure; (4) opportunities to simplify or use better patterns/libraries. Ignore trivial style issues.")
+    (text-mode . "Review the prose in `focus-region` for: (1) clarity and flow; (2) awkward phrasing or ambiguity; (3) logical gaps or weak arguments; (4) tone consistency. Focus on meaning and readability, not nitpicky grammar."))
   "Mode-specific prompt for the polymuse over-the-shoulder assistant."
   :type '(alist :key-type symbol :value-type string))
 
@@ -1114,25 +1518,35 @@ MAX-CHARS is the total character budget.
 MODE-PROMPT and LOCAL-PROMPT are the base prompts.
 CURRENT-UNIT is the cons (BEG . END) of the current focus region.
 
-Returns a plist with :forward-context and :backward-context regions."
+Returns a plist with :forward-context and :backward-context regions.
+
+For small context models (~8K), this allocates context as:
+- 25% for response space (critical!)
+- 60% backward context (typically more relevant)
+- 15% forward context (useful but less critical)"
   (let* ((prompt-size   (+ (length mode-prompt)
                            (length local-prompt)
-                           80))
+                           200))  ; overhead for JSON structure
          (current-len   (polymuse--region-length current-unit))
-         (context-space (max 0 (- max-chars prompt-size current-len)))
-         (forward-budget  (max 0 (floor context-space 2)))
-         (forward-context (and (> forward-budget 0)
-                               (funcall polymuse--next-context-grabber
-                                        forward-budget
-                                        nil
-                                        (and current-unit (cdr current-unit)))))
-         (forward-len     (polymuse--region-length forward-context))
-         (backward-budget (max 0 (- context-space forward-len)))
+         ;; Reserve space for model response to avoid truncation
+         (available     (- max-chars prompt-size current-len))
+         (response-reserve (floor (* available polymuse-response-reserve-ratio)))
+         (context-space (max 0 (- available response-reserve)))
+         ;; Allocate to backward context per configuration
+         (backward-budget (max 0 (floor (* context-space polymuse-context-backward-ratio))))
          (backward-context (and (> backward-budget 0)
                                 (funcall polymuse--prev-context-grabber
                                          backward-budget
                                          nil
-                                         (and current-unit (car current-unit))))))
+                                         (and current-unit (car current-unit)))))
+         (backward-len    (polymuse--region-length backward-context))
+         ;; Give remaining space to forward context
+         (forward-budget  (max 0 (- context-space backward-len)))
+         (forward-context (and (> forward-budget 0)
+                               (funcall polymuse--next-context-grabber
+                                        forward-budget
+                                        nil
+                                        (and current-unit (cdr current-unit))))))
     (list :forward-context forward-context
           :backward-context backward-context)))
 
@@ -1167,19 +1581,7 @@ a plist containing:
           (buffer-prompt     . ,local-prompt)
           ,@(when tools-prompt
               (list `(tools . ((instructions
-                                . ,(string-join '("You may call a tool for more information instead of replying directly."
-                                                  "If you want more information, reply ONLY with a JSON request of the form:"
-                                                  "`{"
-                                                  "\"action\":\"tool-call\","
-                                                  "\"tool\":\"<tool-name>\","
-                                                  "\"arguments\": {"
-                                                  "\"arg0\": \"<value>\","
-                                                  "\"arg1\": \"<value>\""
-                                                  "}"
-                                                  "}`"
-                                                  "The result of the tool call will be added to the request and"
-                                                  "the resulting request will be passed back to you.")
-                                                " "))
+                                . "If you need more info, respond with JSON ONLY: {\"action\":\"tool-call\",\"tool\":\"<name>\",\"arguments\":{\"arg\":\"value\"}}. You'll receive the result and can then provide your review.")
                                (tool-list . ,tools-prompt)))))))
       (environment
        . ((editor     . "emacs")
@@ -1192,16 +1594,9 @@ a plist containing:
       (current
        . ((focus-region . ,current-unit)))
       (task
-       . ((focus   . "Prioritize the text in the `current.focus-region' field.")
-          (details . ,(string-join (append
-                                    '("Analyze and provide feedback based primarily on"
-                                      "the current editing focus-region, using the earlier"
-                                      "and later context for reference.")
-                                    (when include-previous-review
-                                      '("The `context.previous-review` field contains earlier feedback"
-                                        "provided for context only. Do not repeat or revise points from"
-                                        "the previous review; focus on new observations and insights.")))
-                                   " "))
+       . ((focus   . "Review `focus-region`, use `backward-context` and `forward-context` for reference only.")
+          ,@(when include-previous-review
+              (list '(previous . "Don't repeat points from `previous-review`; offer new insights only.")))
           ,@(when final-instructions
               (list `(instructions . ,final-instructions))))))))
 
