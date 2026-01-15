@@ -198,6 +198,13 @@ that defines any project-specific tools for Polymuse to use.")
 
 (cl-defstruct (polymuse-openai-backend-spec (:include polymuse-backend-spec)))
 
+(cl-defstruct (polymuse-mock-backend (:include polymuse-backend))
+  "Mock backend for testing that returns predefined responses.
+
+The response-fn should be a function that takes a request and returns
+a response string. If nil, returns a default test response."
+  response-fn)
+
 (cl-defstruct polymuse-backend
   id            ;; unique id for this backend
   model         ;; model name string
@@ -468,6 +475,24 @@ If the server is unreachable, you may experience UI freezing."
         (polymuse--debug-log "\n\nREQUEST:\n\n%s\n\nEND REQUEST\n\n"
                              (polymuse--format-json (json-serialize request))))
       result)))
+
+(cl-defmethod polymuse-request-review ((backend polymuse-mock-backend) request &rest args)
+  "Execute REQUEST to the mock BACKEND, returning a predefined response.
+
+This method is synchronous and immediately calls the callback with the
+mock response, making it suitable for testing without network calls."
+  (let* ((callback (plist-get args :callback))
+         (response-fn (polymuse-mock-backend-response-fn backend))
+         (response (if response-fn
+                       (funcall response-fn request)
+                     "Mock review response for testing.")))
+    (when polymuse-debug
+      (polymuse--debug-log "\n\nMOCK REQUEST:\n\n%s\n\nEND REQUEST\n\n"
+                           (polymuse--format-json (json-serialize request)))
+      (polymuse--debug-log "\n\nMOCK RESPONSE:\n\n%s\n\nEND RESPONSE\n\n" response))
+    (when callback
+      (funcall callback response nil))
+    response))
 
 (defun polymuse-find-backend (backend-id)
   "Given a BACKEND-ID, find the associated Polymuse backend."
@@ -1018,20 +1043,32 @@ Returns a plist with :forward-context and :backward-context regions."
     (list :forward-context forward-context
           :backward-context backward-context)))
 
-(defun polymuse--compose-prompt (review)
-  "Generate the full prompt for REVIEW, for use with the PolyMuse backend LLM."
-  (let* ((mode-prompt   (or (polymuse-get-mode-prompt) ""))
-         (local-prompt  (or (polymuse-review-state-instructions review) ""))
-         (max-chars     (or polymuse-max-prompt-characters most-positive-fixnum))
-         (tools-prompt  (polymuse--format-tools-prompt))
-         (current-unit  (funcall polymuse--unit-grabber))
-         (context-regions (polymuse--calculate-context-regions
-                           max-chars mode-prompt local-prompt current-unit))
-         (forward-context  (plist-get context-regions :forward-context))
-         (backward-context (plist-get context-regions :backward-context))
-         (out-buffer            (polymuse-review-state-output-buffer review))
-         (previous-review-lines (polymuse-review-state-review-context review))
-         (previous-review       (polymuse--grab-buffer-tail out-buffer previous-review-lines)))
+(defun polymuse--compose-prompt-from-context (review-params)
+  "Generate a prompt from explicit REVIEW-PARAMS.
+
+This is a pure function that constructs the prompt from explicit parameters,
+making it easy to test without buffer-local state. REVIEW-PARAMS should be
+a plist containing:
+  :mode-prompt          Mode-specific prompt string
+  :local-prompt         Buffer-specific instructions
+  :tools-prompt         Vector of tool definitions
+  :backward-context     String of context before point
+  :forward-context      String of context after point
+  :current-unit         String of the current focus region
+  :previous-review      String of previous review (optional)
+  :major-mode           Symbol of the major mode
+  :include-previous-review Boolean
+  :final-instructions   String of final instructions (optional)"
+  (let ((mode-prompt (plist-get review-params :mode-prompt))
+        (local-prompt (plist-get review-params :local-prompt))
+        (tools-prompt (plist-get review-params :tools-prompt))
+        (backward-context (plist-get review-params :backward-context))
+        (forward-context (plist-get review-params :forward-context))
+        (current-unit (plist-get review-params :current-unit))
+        (previous-review (plist-get review-params :previous-review))
+        (major-mode-sym (plist-get review-params :major-mode))
+        (include-previous-review (plist-get review-params :include-previous-review))
+        (final-instructions (plist-get review-params :final-instructions)))
     `((review-request
        . ((mode-prompt       . ,mode-prompt)
           (buffer-prompt     . ,local-prompt)
@@ -1053,27 +1090,53 @@ Returns a plist with :forward-context and :backward-context regions."
                                (tool-list . ,tools-prompt)))))))
       (environment
        . ((editor     . "emacs")
-          (major_mode . ,(symbol-name major-mode))))
+          (major_mode . ,(symbol-name major-mode-sym))))
       (context
-       . ((backward-context . ,(polymuse--region-string backward-context))
-          (forward-context  . ,(polymuse--region-string forward-context))
-          ,@(when polymuse-include-previous-review
+       . ((backward-context . ,backward-context)
+          (forward-context  . ,forward-context)
+          ,@(when include-previous-review
               (list `(previous-review . ,previous-review)))))
       (current
-       . ((focus-region . ,(polymuse--region-string current-unit))))
+       . ((focus-region . ,current-unit)))
       (task
        . ((focus   . "Prioritize the text in the `current.focus-region' field.")
           (details . ,(string-join (append
                                     '("Analyze and provide feedback based primarily on"
                                       "the current editing focus-region, using the earlier"
                                       "and later context for reference.")
-                                    (when polymuse-include-previous-review
+                                    (when include-previous-review
                                       '("The `context.previous-review` field contains earlier feedback"
                                         "provided for context only. Do not repeat or revise points from"
                                         "the previous review; focus on new observations and insights.")))
                                    " "))
-          ,@(when polymuse-final-instructions
-              (list `(instructions . ,polymuse-final-instructions))))))))
+          ,@(when final-instructions
+              (list `(instructions . ,final-instructions))))))))
+
+(defun polymuse--compose-prompt (review)
+  "Generate the full prompt for REVIEW, for use with the PolyMuse backend LLM."
+  (let* ((mode-prompt   (or (polymuse-get-mode-prompt) ""))
+         (local-prompt  (or (polymuse-review-state-instructions review) ""))
+         (max-chars     (or polymuse-max-prompt-characters most-positive-fixnum))
+         (tools-prompt  (polymuse--format-tools-prompt))
+         (current-unit  (funcall polymuse--unit-grabber))
+         (context-regions (polymuse--calculate-context-regions
+                           max-chars mode-prompt local-prompt current-unit))
+         (forward-context  (plist-get context-regions :forward-context))
+         (backward-context (plist-get context-regions :backward-context))
+         (out-buffer            (polymuse-review-state-output-buffer review))
+         (previous-review-lines (polymuse-review-state-review-context review))
+         (previous-review       (polymuse--grab-buffer-tail out-buffer previous-review-lines)))
+    (polymuse--compose-prompt-from-context
+     (list :mode-prompt mode-prompt
+           :local-prompt local-prompt
+           :tools-prompt tools-prompt
+           :backward-context (polymuse--region-string backward-context)
+           :forward-context (polymuse--region-string forward-context)
+           :current-unit (polymuse--region-string current-unit)
+           :previous-review previous-review
+           :major-mode major-mode
+           :include-previous-review polymuse-include-previous-review
+           :final-instructions polymuse-final-instructions))))
 
 (defun polymuse--reviewed-buffer-p (&optional buffer)
   "Return t if a BUFFER is a buffer under review."
@@ -1399,6 +1462,29 @@ REVIEW-CONTEXT is the number of lines of earlier review to include in the
                       (window-width . 0.33)))
     (polymuse--run-review (current-buffer) state)
     state))
+
+;;;;
+;; Test Helpers
+;;;;
+
+(defun polymuse-create-mock-backend (&optional response-fn)
+  "Create a mock backend for testing.
+
+RESPONSE-FN, if provided, should be a function that takes a request
+and returns a response string. If nil, a default test response is used.
+
+Example:
+  (let ((backend (polymuse-create-mock-backend
+                   (lambda (req) \"Custom test response\"))))
+    (polymuse-request-review backend
+                             '((test . prompt))
+                             :callback (lambda (resp info)
+                                        (message \"Got: %s\" resp))))"
+  (make-polymuse-mock-backend
+   :id 'test-backend
+   :model "mock-model"
+   :temperature 0.0
+   :response-fn response-fn))
 
 (provide 'polymuse)
 ;;; polymuse.el ends here

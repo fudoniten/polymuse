@@ -64,6 +64,12 @@
 (defvar typewrite--timer nil
   "Driver timer for active typewriter jobs.")
 
+(defvar typewrite-test-mode nil
+  "When non-nil, execute typewriter jobs synchronously for testing.
+
+In test mode, `typewrite-enqueue-job' will immediately insert all text
+without using timers, making tests deterministic and fast.")
+
 (cl-defstruct typewrite-job
   buffer
   marker
@@ -85,6 +91,27 @@
     (unless typewrite--timer
       (setq typewrite--timer
             (run-at-time 0 seconds #'typewrite--tick)))))
+
+(defun typewrite--execute-job-synchronously (job)
+  "Execute JOB immediately and synchronously, inserting all text at once.
+
+This is used in test mode to avoid timer dependencies and make tests
+deterministic. The job's done-callback will be called after insertion."
+  (let* ((buf (typewrite-job-buffer job))
+         (marker (typewrite-job-marker job))
+         (str (typewrite-job-string job))
+         (follow (typewrite-job-follow job))
+         (inhibit-read-only-val (typewrite-job-inhibit-read-only job)))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (save-excursion
+          (let ((inhibit-read-only inhibit-read-only-val))
+            (goto-char marker)
+            (insert str)))
+        (setf (typewrite-job-index job) (length str))
+        (when follow
+          (typewrite--follow-marker job marker))
+        (typewrite--run-done-callback job)))))
 
 (defun typewrite-enqueue-job (str buffer &rest config)
   "Enqueue a new typewriter job for STR into BUFFER, with CONFIG.
@@ -137,8 +164,11 @@ CONFIG is a plist which may contain:
                 :follow (plist-get config :follow)
                 :inhibit-read-only inhibit-read-only-setting
                 :done-callback (plist-get config :done-callback))))
-      (push job typewrite--jobs)
-      (typewrite--ensure-timer)
+      (if typewrite-test-mode
+          (typewrite--execute-job-synchronously job)
+        (progn
+          (push job typewrite--jobs)
+          (typewrite--ensure-timer)))
       job)))
 
 (defun typewrite--tick ()

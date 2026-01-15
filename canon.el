@@ -543,5 +543,70 @@ added to a `Suggestions' subheading for user review."
                   entity-id))
       (format "Cannot add suggestion: entity '%s' not found" entity-id))))
 
+;;;;
+;; Test Helpers
+;;;;
+
+(defun canon-test-create-buffer (&optional content)
+  "Create a temporary canon buffer for testing.
+
+If CONTENT is provided, it should be a string containing the initial
+org-mode content for the canon. Otherwise, an empty canon with basic
+structure is created.
+
+Returns a cons of (BUFFER . TEMP-FILE) where BUFFER is the canon buffer
+and TEMP-FILE is the path to the temporary file. The caller is responsible
+for cleaning up both the buffer and file after testing.
+
+Example usage:
+  (let* ((canon-setup (canon-test-create-buffer))
+         (canon-buffer (car canon-setup))
+         (canon-file-path (cdr canon-setup)))
+    (unwind-protect
+        (progn
+          (setq canon-file canon-file-path)
+          (setq canon--buffer canon-buffer)
+          ;; Run your tests here
+          )
+      ;; Cleanup
+      (when (buffer-live-p canon-buffer)
+        (kill-buffer canon-buffer))
+      (when (file-exists-p canon-file-path)
+        (delete-file canon-file-path))))"
+  (let* ((temp-file (make-temp-file "canon-test-" nil ".org"))
+         (initial-content (or content "#+TITLE: Test Canon\n\n* Characters\n\n* Locations\n\n"))
+         (buf (find-file-noselect temp-file)))
+    (with-current-buffer buf
+      (erase-buffer)
+      (insert initial-content)
+      (org-mode)
+      (save-buffer)
+      (setq-local canon-file temp-file)
+      (canon-mode 1))
+    (cons buf temp-file)))
+
+(defmacro canon-test-with-temp-canon (content &rest body)
+  "Execute BODY with a temporary canon buffer.
+
+CONTENT is the initial org-mode content for the canon (string).
+Within BODY, `canon-file' and `canon--buffer' are set to the temporary
+test canon. The temporary buffer and file are automatically cleaned up
+after BODY completes.
+
+Example:
+  (canon-test-with-temp-canon \"* Characters\\n\\n* Locations\"
+    (canon-insert-entity \"Characters\" \"alice\")
+    (should (canon-get-entity-text \"alice\")))"
+  (declare (indent 1))
+  `(let* ((canon-setup (canon-test-create-buffer ,content))
+          (canon--buffer (car canon-setup))
+          (canon-file (cdr canon-setup)))
+     (unwind-protect
+         (progn ,@body)
+       (when (buffer-live-p canon--buffer)
+         (kill-buffer canon--buffer))
+       (when (file-exists-p canon-file)
+         (delete-file canon-file)))))
+
 (provide 'canon)
 ;;; canon.el ends here
