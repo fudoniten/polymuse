@@ -163,8 +163,9 @@
     (with-current-buffer canon--buffer
       (let ((pos (canon--ensure-type-heading "Characters")))
         (should pos)
-        (goto-char pos)
-        (should (looking-at "\\* Characters"))))))
+        (should (progn
+                  (goto-char pos)
+                  (looking-at "\\* Characters")))))))
 
 (ert-deftest canon-test-ensure-type-heading-new ()
   "Test creating a new type heading."
@@ -172,8 +173,9 @@
     (with-current-buffer canon--buffer
       (let ((pos (canon--ensure-type-heading "NewType")))
         (should pos)
-        (goto-char pos)
-        (should (looking-at "\\* NewType"))))))
+        (should (progn
+                  (goto-char pos)
+                  (looking-at "\\* NewType")))))))
 
 ;;;; Subheading Tests
 
@@ -184,9 +186,10 @@
     (let ((pos (canon--find-entity-heading "test-char")))
       (with-current-buffer canon--buffer
         (canon--append-to-subheading-text pos "Notes" "Test note content.")))
-    (let ((notes (canon--get-subheading-text
-                  (canon--find-entity-heading "test-char")
-                  "Notes")))
+    (let ((notes (with-current-buffer canon--buffer
+                   (canon--get-subheading-text
+                    (canon--find-entity-heading "test-char")
+                    "Notes"))))
       (should (stringp notes))
       (should (string-match-p "Test note content" notes)))))
 
@@ -197,9 +200,10 @@
     (let ((pos (canon--find-entity-heading "test-char")))
       (with-current-buffer canon--buffer
         (canon--set-subheading-text pos "Description" "New description.")))
-    (let ((desc (canon--get-subheading-text
-                 (canon--find-entity-heading "test-char")
-                 "Description")))
+    (let ((desc (with-current-buffer canon--buffer
+                  (canon--get-subheading-text
+                   (canon--find-entity-heading "test-char")
+                   "Description"))))
       (should (string= (string-trim desc) "New description.")))))
 
 (ert-deftest canon-test-append-to-subheading ()
@@ -210,9 +214,10 @@
       (with-current-buffer canon--buffer
         (canon--append-to-subheading-text pos "Notes" "First note.\n")
         (canon--append-to-subheading-text pos "Notes" "Second note.\n")))
-    (let ((notes (canon--get-subheading-text
-                  (canon--find-entity-heading "test-char")
-                  "Notes")))
+    (let ((notes (with-current-buffer canon--buffer
+                   (canon--get-subheading-text
+                    (canon--find-entity-heading "test-char")
+                    "Notes"))))
       (should (string-match-p "First note" notes))
       (should (string-match-p "Second note" notes)))))
 
@@ -281,11 +286,12 @@
             (should (stringp result))
             (should (string-match-p "Suggestion added" result)))
           ;; Verify suggestion was added
-          (let ((suggestions (canon--get-subheading-text
-                             (canon--find-entity-heading "alice")
-                             "Suggestions")))
-            (should (stringp suggestions))
-            (should (string-match-p "backstory" suggestions))))
+          (with-current-buffer canon--buffer
+            (let ((suggestions (canon--get-subheading-text
+                               (canon--find-entity-heading "alice")
+                               "Suggestions")))
+              (should (stringp suggestions))
+              (should (string-match-p "backstory" suggestions)))))
       (kill-buffer canon--buffer)
       (delete-file canon-file))))
 
