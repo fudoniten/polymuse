@@ -299,6 +299,61 @@ Provides a typewriter effect for inserting text into Emacs buffers, gradually re
   :commands (typewrite-enqueue-job))
 ```
 
+## Development & Testing
+
+### Running Tests
+
+Each package in this repository has its own test suite using ERT (Emacs Lisp Regression Testing).
+
+#### Running All Tests
+
+To run all tests for all packages:
+
+```bash
+# Run typewrite tests
+emacs -batch -l typewrite.el -l typewrite-test.el -f ert-run-tests-batch-and-exit
+
+# Run canon tests
+emacs -batch -l canon.el -l canon-test.el -f ert-run-tests-batch-and-exit
+
+# Run polymuse tests (requires dependencies)
+emacs -batch -l package.el \
+  --eval "(require 'package)" \
+  --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)" \
+  --eval "(package-initialize)" \
+  -l polymuse.el -l polymuse-test.el -f ert-run-tests-batch-and-exit
+```
+
+#### Running Tests Interactively
+
+You can also run tests interactively within Emacs:
+
+```elisp
+;; Load the package and its tests
+(load-file "canon.el")
+(load-file "canon-test.el")
+
+;; Run all tests for the package
+M-x ert RET t RET
+
+;; Run a specific test
+M-x ert RET canon-test-insert-entity-basic RET
+
+;; Run tests matching a pattern
+M-x ert RET "^canon-test-.*entity" RET
+```
+
+#### Test Requirements
+
+- **Emacs 29.3 or later** (some tests may work with earlier versions)
+- For polymuse tests: `gptel` and `markdown-mode` packages from MELPA
+
+#### Continuous Integration
+
+All tests run automatically on GitHub Actions for every push to main branches and pull requests. The test matrix includes:
+- Emacs 29.3 (stable)
+- Emacs snapshot (latest development version)
+
 ## License
 
 Copyright (C) 2025 Niten
@@ -308,6 +363,11 @@ This program is free software; you can redistribute it and/or modify it under th
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues or pull requests.
+
+When contributing, please ensure:
+- All existing tests pass
+- New features include appropriate test coverage
+- Code follows the existing style conventions
 
 ## Author
 
