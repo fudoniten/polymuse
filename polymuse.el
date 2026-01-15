@@ -182,8 +182,230 @@ when the user is away from their desk. Default is 60 seconds."
   :type 'integer)
 
 ;;;;
+;; MODEL CONFIGURATION PRESETS
+;;;;
+
+(cl-defstruct polymuse-config
+  "Configuration preset for a specific LLM model.
+
+Each preset encapsulates the optimal settings for a particular model,
+including context limits, allocation ratios, and whether to include
+previous review history."
+  name                      ; Symbol identifier (e.g., 'llama-3.1-8b)
+  description               ; Human-readable description
+  max-prompt-characters     ; Maximum prompt length in characters
+  response-reserve-ratio    ; Ratio of space reserved for response
+  context-backward-ratio    ; Ratio of context allocated backward
+  include-previous-review   ; Whether to include review history
+  mode-prompts)             ; Optional custom mode-specific prompts
+
+(defvar polymuse-config-presets
+  `((default
+     . ,(make-polymuse-config
+         :name 'default
+         :description "Conservative defaults for 8K context models"
+         :max-prompt-characters 7000
+         :response-reserve-ratio 0.28
+         :context-backward-ratio 0.60
+         :include-previous-review nil
+         :mode-prompts nil))
+
+    (llama-3.2-3b
+     . ,(make-polymuse-config
+         :name 'llama-3.2-3b
+         :description "Llama 3.2 3B - Fast, lightweight, good for quick feedback"
+         :max-prompt-characters 5500
+         :response-reserve-ratio 0.35
+         :context-backward-ratio 0.55
+         :include-previous-review nil
+         :mode-prompts nil))
+
+    (llama-3.1-8b
+     . ,(make-polymuse-config
+         :name 'llama-3.1-8b
+         :description "Llama 3.1 8B - Great balance of speed and capability (recommended)"
+         :max-prompt-characters 7000
+         :response-reserve-ratio 0.28
+         :context-backward-ratio 0.60
+         :include-previous-review nil
+         :mode-prompts nil))
+
+    (mistral-7b
+     . ,(make-polymuse-config
+         :name 'mistral-7b
+         :description "Mistral 7B v0.3 - Excellent for code, concise responses"
+         :max-prompt-characters 6800
+         :response-reserve-ratio 0.25
+         :context-backward-ratio 0.62
+         :include-previous-review nil
+         :mode-prompts nil))
+
+    (qwen-2.5-coder-7b
+     . ,(make-polymuse-config
+         :name 'qwen-2.5-coder-7b
+         :description "Qwen 2.5 Coder 7B - Code-specialized, excellent pattern recognition"
+         :max-prompt-characters 7200
+         :response-reserve-ratio 0.27
+         :context-backward-ratio 0.68
+         :include-previous-review nil
+         :mode-prompts '((prog-mode . "Review code in `focus-region`. Priority: (1) bugs/logic errors; (2) security issues (injection, validation); (3) performance problems; (4) better standard library usage. Suggest specific functions/patterns.")
+                         (text-mode . "Review prose in `focus-region` for clarity and correctness. Keep feedback brief."))))
+
+    (deepseek-coder-6.7b
+     . ,(make-polymuse-config
+         :name 'deepseek-coder-6.7b
+         :description "DeepSeek Coder 6.7B - Excellent code understanding, good at explaining complex logic"
+         :max-prompt-characters 6500
+         :response-reserve-ratio 0.32
+         :context-backward-ratio 0.65
+         :include-previous-review nil
+         :mode-prompts nil))
+
+    (gemma-2-9b
+     . ,(make-polymuse-config
+         :name 'gemma-2-9b
+         :description "Gemma 2 9B - Strong general-purpose model for code and prose"
+         :max-prompt-characters 7500
+         :response-reserve-ratio 0.28
+         :context-backward-ratio 0.58
+         :include-previous-review t
+         :mode-prompts nil))
+
+    (phi-3-mini
+     . ,(make-polymuse-config
+         :name 'phi-3-mini
+         :description "Phi-3 Mini (3.8B) - Efficient small model with strong capabilities"
+         :max-prompt-characters 5000
+         :response-reserve-ratio 0.35
+         :context-backward-ratio 0.58
+         :include-previous-review nil
+         :mode-prompts nil))
+
+    (codellama-7b
+     . ,(make-polymuse-config
+         :name 'codellama-7b
+         :description "CodeLlama 7B - Meta's code-specialized Llama variant"
+         :max-prompt-characters 6800
+         :response-reserve-ratio 0.30
+         :context-backward-ratio 0.70
+         :include-previous-review nil
+         :mode-prompts nil)))
+  "Alist of predefined configuration presets for popular Ollama models.
+
+Each preset is optimized for a specific model's context window size,
+response patterns, and typical use cases. Use `polymuse-use-config'
+to apply a preset.")
+
+(defvar polymuse-current-config 'default
+  "Currently active configuration preset (symbol).")
+
+(defun polymuse-get-config (config-name)
+  "Get configuration preset CONFIG-NAME from `polymuse-config-presets'.
+
+Returns a `polymuse-config' struct or nil if not found."
+  (cdr (assq config-name polymuse-config-presets)))
+
+(defun polymuse-apply-config (config &optional buffer)
+  "Apply CONFIG (a `polymuse-config' struct) to BUFFER or current buffer.
+
+Sets buffer-local variables according to the configuration preset.
+If BUFFER is nil, applies to the current buffer."
+  (with-current-buffer (or buffer (current-buffer))
+    (setq-local polymuse-max-prompt-characters
+                (polymuse-config-max-prompt-characters config))
+    (setq-local polymuse-response-reserve-ratio
+                (polymuse-config-response-reserve-ratio config))
+    (setq-local polymuse-context-backward-ratio
+                (polymuse-config-context-backward-ratio config))
+    (setq-local polymuse-include-previous-review
+                (polymuse-config-include-previous-review config))
+    (when (polymuse-config-mode-prompts config)
+      (setq-local polymuse-mode-prompts
+                  (polymuse-config-mode-prompts config)))
+    (setq-local polymuse-current-config
+                (polymuse-config-name config))))
+
+(defun polymuse-use-config (config-name)
+  "Switch to configuration preset CONFIG-NAME.
+
+CONFIG-NAME should be a symbol like 'llama-3.1-8b or 'mistral-7b.
+See `polymuse-config-presets' for available presets.
+
+This sets buffer-local variables, so different buffers can use
+different configurations."
+  (interactive
+   (list (intern (completing-read
+                  "Polymuse config: "
+                  (mapcar (lambda (entry)
+                            (let* ((config (cdr entry))
+                                   (name (symbol-name (polymuse-config-name config)))
+                                   (desc (polymuse-config-description config)))
+                              (cons (format "%-20s - %s" name desc) (car entry))))
+                          polymuse-config-presets)
+                  nil t))))
+  (let ((config (polymuse-get-config config-name)))
+    (unless config
+      (user-error "Unknown configuration preset: %s" config-name))
+    (polymuse-apply-config config)
+    (message "Polymuse config: %s - %s"
+             (polymuse-config-name config)
+             (polymuse-config-description config))))
+
+(defun polymuse-show-current-config ()
+  "Display the current Polymuse configuration settings."
+  (interactive)
+  (let ((config-name (if (boundp 'polymuse-current-config)
+                         polymuse-current-config
+                       'default)))
+    (message "Polymuse config: %s | prompt-chars=%d | response-reserve=%.2f | backward-ratio=%.2f | prev-review=%s"
+             config-name
+             polymuse-max-prompt-characters
+             polymuse-response-reserve-ratio
+             polymuse-context-backward-ratio
+             polymuse-include-previous-review)))
+
+(defun polymuse-list-configs ()
+  "Display all available configuration presets."
+  (interactive)
+  (let ((buf (get-buffer-create "*Polymuse Configurations*")))
+    (with-current-buffer buf
+      (erase-buffer)
+      (insert "# Polymuse Configuration Presets\n\n")
+      (insert "Use M-x polymuse-use-config to switch between these presets:\n\n")
+      (dolist (entry polymuse-config-presets)
+        (let* ((config (cdr entry))
+               (current-p (eq (polymuse-config-name config) polymuse-current-config)))
+          (insert (format "%s%-20s - %s\n"
+                          (if current-p "* " "  ")
+                          (polymuse-config-name config)
+                          (polymuse-config-description config)))
+          (insert (format "  max-chars: %d | response-reserve: %.2f | backward: %.2f | prev-review: %s\n\n"
+                          (polymuse-config-max-prompt-characters config)
+                          (polymuse-config-response-reserve-ratio config)
+                          (polymuse-config-context-backward-ratio config)
+                          (polymuse-config-include-previous-review config)))))
+      (goto-char (point-min))
+      (help-mode))
+    (display-buffer buf)))
+
+;;;;
 ;; EXAMPLE CONFIGURATIONS FOR POPULAR OLLAMA MODELS
 ;;;;
+
+;; NOTE: The configuration examples below are now available as presets!
+;; Instead of copying these settings manually, use:
+;;
+;;   M-x polymuse-use-config RET llama-3.1-8b RET
+;;
+;; Or in your init.el:
+;;
+;;   (add-hook 'polymuse-mode-hook
+;;             (lambda () (polymuse-use-config 'llama-3.1-8b)))
+;;
+;; Use M-x polymuse-list-configs to see all available presets.
+;;
+;; The examples below are kept for reference and for understanding
+;; how to create custom configurations.
 
 ;; The settings below are optimized for models with ~8K context windows.
 ;; Adjust based on your hardware and quality preferences.
