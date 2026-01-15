@@ -155,8 +155,27 @@ or was active within this many seconds. This prevents generating reviews
 when the user is away from their desk. Default is 60 seconds."
   :type 'integer)
 
-(defvar polymuse--timer nil
-  "Driver timer for active Polymuse reviewers.")
+(cl-defstruct polymuse-global-state
+  "Global state container for Polymuse.
+
+This allows tests to isolate timer state by binding `polymuse--test-state'."
+  (timer nil))
+
+(defvar polymuse--default-global-state (make-polymuse-global-state)
+  "Default global state for Polymuse.")
+
+(defvar polymuse--test-global-state nil
+  "When bound in tests, overrides the default global state.
+
+Tests should bind this to a fresh `polymuse-global-state' to isolate
+themselves from global state and other tests.")
+
+(defun polymuse--get-global-state ()
+  "Get the current Polymuse global state.
+
+Returns `polymuse--test-global-state' if bound (for testing), otherwise
+returns the global `polymuse--default-global-state'."
+  (or polymuse--test-global-state polymuse--default-global-state))
 
 (defvar-local polymuse--last-activity-time nil
   "Timestamp of the last buffer activity (for tracking user presence).")
@@ -1270,11 +1289,12 @@ a plist containing:
 
 (defun polymuse--enable ()
   "Enable the Polymuse LLM live review mode."
-  (unless polymuse--timer
-    (setq polymuse--timer
-          (run-with-timer polymuse-default-interval ;; How long to wait before the first review
-                          polymuse-default-interval ;; How long to pause between reviews
-                          #'polymuse--global-idle-tick)))
+  (let ((state (polymuse--get-global-state)))
+    (unless (polymuse-global-state-timer state)
+      (setf (polymuse-global-state-timer state)
+            (run-with-timer polymuse-default-interval ;; How long to wait before the first review
+                            polymuse-default-interval ;; How long to pause between reviews
+                            #'polymuse--global-idle-tick))))
   (if (polymuse--code-mode-p)
       (setq polymuse--unit-grabber #'polymuse--get-unit-sexp
             polymuse--prev-context-grabber #'polymuse--get-context-before-point-sexps
@@ -1291,15 +1311,28 @@ a plist containing:
 
 (defun polymuse--disable ()
   "Disable the Polymuse LLM live review mode."
-  (when (and polymuse--timer
-             (not (cl-some (lambda (b) (with-current-buffer b polymuse-mode))
-                           (buffer-list))))
-    (cancel-timer polymuse--timer)
-    (setq polymuse--timer nil)))
+  (let ((state (polymuse--get-global-state)))
+    (when (and (polymuse-global-state-timer state)
+               (not (cl-some (lambda (b) (with-current-buffer b polymuse-mode))
+                             (buffer-list))))
+      (cancel-timer (polymuse-global-state-timer state))
+      (setf (polymuse-global-state-timer state) nil))))
 
 (defun polymuse--buffer-hash ()
   "Generate a hash for the current buffer, to detect differences."
   (secure-hash 'sha1 (current-buffer)))
+
+(defun polymuse--format-review-for-display (response &optional timestamp)
+  "Format RESPONSE for display with TIMESTAMP.
+
+This is a pure function that returns the formatted string without
+performing any I/O. If TIMESTAMP is nil, uses the current time.
+
+Returns a string suitable for appending to a review buffer."
+  (concat "\n\n>>> "
+          (format-time-string "%H:%M:%S" timestamp)
+          "\n\n"
+          response))
 
 (defun polymuse--display-review (review response)
   "Display the review in RESPONSE according to the state in REVIEW."
@@ -1307,17 +1340,14 @@ a plist containing:
     (if (not (buffer-live-p outbuf))
         (error "Output buffer %s for review %s is not live"
                outbuf (polymuse-review-state-id review))
-      (with-current-buffer outbuf
-        (let ((inhibit-read-only t)
-              (full-response (concat "\n\n>>> "
-                                     (format-time-string "%H:%M:%S")
-                                     "\n\n"
-                                     response)))
-          (polymuse-suggestions-mode)
-          (polymuse--truncate-buffer-to-length
-           (current-buffer)
-           (polymuse-review-state-buffer-size-limit review))
-          (typewrite-enqueue-job full-response outbuf
+      (let ((formatted-response (polymuse--format-review-for-display response)))
+        (with-current-buffer outbuf
+          (let ((inhibit-read-only t))
+            (polymuse-suggestions-mode)
+            (polymuse--truncate-buffer-to-length
+             (current-buffer)
+             (polymuse-review-state-buffer-size-limit review)))
+          (typewrite-enqueue-job formatted-response outbuf
                                  :inhibit-read-only t
                                  :follow t
                                  :cps 45))))))
@@ -1485,6 +1515,98 @@ Example:
    :model "mock-model"
    :temperature 0.0
    :response-fn response-fn))
+
+(defmacro polymuse-test-with-isolated-state (&rest body)
+  "Execute BODY with isolated Polymuse global state.
+
+This creates a fresh state container for the duration of BODY,
+preventing tests from interfering with each other or with global state.
+
+Example:
+  (polymuse-test-with-isolated-state
+    (with-temp-buffer
+      (polymuse-mode 1)
+      ;; Test polymuse functionality without affecting global state
+      ...))"
+  (declare (indent 0))
+  `(let ((polymuse--test-global-state (make-polymuse-global-state)))
+     ,@body))
+
+(defun polymuse-test-fixture-simple-context ()
+  "Create a simple test context for prompt composition testing.
+
+Returns a plist suitable for passing to
+`polymuse--compose-prompt-from-context'."
+  (list :mode-prompt "Provide code review feedback."
+        :local-prompt "Be concise and actionable."
+        :tools-prompt nil
+        :backward-context "Previous code context here."
+        :forward-context "Following code context here."
+        :current-unit "(defun example-function (x)\n  (+ x 1))"
+        :previous-review nil
+        :major-mode 'emacs-lisp-mode
+        :include-previous-review nil
+        :final-instructions nil))
+
+(defun polymuse-test-fixture-context-with-tools ()
+  "Create a test context with tools for prompt composition testing.
+
+Returns a plist with sample tool definitions included."
+  (let ((base-context (polymuse-test-fixture-simple-context)))
+    (plist-put base-context :tools-prompt
+               (vector
+                '((tool-name . "lookup-doc")
+                  (tool-args . ["doc-id"])
+                  (tool-description . "Look up documentation by ID"))))
+    base-context))
+
+(defun polymuse-test-create-mock-review-state (&optional backend)
+  "Create a mock review state for testing.
+
+BACKEND, if provided, should be a backend instance. Otherwise, creates
+a mock backend with default responses.
+
+Returns a `polymuse-review-state' struct suitable for testing.
+The caller is responsible for cleaning up the output buffer."
+  (let* ((test-backend (or backend (polymuse-create-mock-backend)))
+         (output-buffer (generate-new-buffer " *polymuse-test-output*")))
+    (make-polymuse-review-state
+     :id "test-review"
+     :interval 60
+     :last-run-time nil
+     :last-hash nil
+     :buffer-size-limit 10000
+     :output-buffer output-buffer
+     :instructions "Test instructions"
+     :backend test-backend
+     :review-context 10
+     :source-buffer (current-buffer)
+     :status 'idle
+     :request-started-time nil)))
+
+(defmacro polymuse-test-with-mock-review (&rest body)
+  "Execute BODY with a mock review state.
+
+Within BODY, the variable `test-review' is bound to a mock review state
+and `test-backend' is bound to a mock backend.
+
+Example:
+  (polymuse-test-with-mock-review
+    (should (eq (polymuse-review-state-status test-review) 'idle))
+    (polymuse-request-review test-backend
+                             '((test . prompt))
+                             :callback (lambda (resp info)
+                                        (should (stringp resp)))))"
+  (declare (indent 0))
+  `(polymuse-test-with-isolated-state
+     (with-temp-buffer
+       (let* ((test-backend (polymuse-create-mock-backend))
+              (test-review (polymuse-test-create-mock-review-state test-backend)))
+         (unwind-protect
+             (progn ,@body)
+           (when-let ((buf (polymuse-review-state-output-buffer test-review)))
+             (when (buffer-live-p buf)
+               (kill-buffer buf))))))))
 
 (provide 'polymuse)
 ;;; polymuse.el ends here

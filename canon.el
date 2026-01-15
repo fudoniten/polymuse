@@ -608,5 +608,67 @@ Example:
        (when (file-exists-p canon-file)
          (delete-file canon-file)))))
 
+(defun canon-test-fixture-simple-canon ()
+  "Create a simple test canon with common entity types.
+
+Returns a cons of (BUFFER . FILE) for a temporary canon containing
+standard sections: Characters, Locations, Events, and Items.
+
+The caller is responsible for cleanup."
+  (canon-test-create-buffer
+   (string-join
+    '("#+TITLE: Test Canon"
+      ""
+      "* Characters"
+      ""
+      "* Locations"
+      ""
+      "* Events"
+      ""
+      "* Items"
+      "")
+    "\n")))
+
+(defun canon-test-fixture-canon-with-entities ()
+  "Create a test canon pre-populated with sample entities.
+
+Returns a cons of (BUFFER . FILE) for a temporary canon containing
+several sample entities for testing lookups, searches, etc.
+
+The caller is responsible for cleanup."
+  (canon-test-create-buffer
+   (string-join
+    '("#+TITLE: Test Canon"
+      ""
+      "* Characters"
+      ""
+      "** [Characters] alice"
+      ":PROPERTIES:"
+      ":ID: alice"
+      ":Role: protagonist"
+      ":END:"
+      ""
+      "Alice is the main character."
+      ""
+      "** [Characters] bob"
+      ":PROPERTIES:"
+      ":ID: bob"
+      ":Role: antagonist"
+      ":END:"
+      ""
+      "Bob is the villain."
+      ""
+      "* Locations"
+      ""
+      "** [Locations] castle"
+      ":PROPERTIES:"
+      ":ID: castle"
+      ":Type: building"
+      ":END:"
+      ""
+      "A dark and foreboding castle."
+      "")
+    "\n")))
+
 (provide 'canon)
 ;;; canon.el ends here
