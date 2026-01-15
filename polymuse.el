@@ -646,17 +646,17 @@ that defines any project-specific tools for Polymuse to use.")
 
 (cl-defstruct (polymuse-openai-backend-spec (:include polymuse-backend-spec)))
 
+(cl-defstruct polymuse-backend
+  id            ;; unique id for this backend
+  model         ;; model name string
+  temperature)  ;; model temperature
+
 (cl-defstruct (polymuse-mock-backend (:include polymuse-backend))
   "Mock backend for testing that returns predefined responses.
 
 The response-fn should be a function that takes a request and returns
 a response string. If nil, returns a default test response."
   response-fn)
-
-(cl-defstruct polymuse-backend
-  id            ;; unique id for this backend
-  model         ;; model name string
-  temperature)  ;; model temperature
 
 (cl-defstruct (polymuse-gptel-backend (:include polymuse-backend))
   executor)
