@@ -458,16 +458,16 @@ If the server is unreachable, you may experience UI freezing."
                      (polymuse--debug-log "INFO: %s" info)
                      (polymuse--debug-log "\n\nRESPONSE:\n\n%s\n\nEND RESPONSE\n\n" resp)
                      (when callback (funcall callback resp info)))))
-    (let ((request (json-serialize request)))
-      (let* ((gptel-backend     executor)
-             (gptel-model       model)
-             (gptel-temperature temperature)
-             (result (gptel-request request
-                       :system   system
-                       :callback handler)))
+    (let* ((gptel-backend     executor)
+           (gptel-model       model)
+           (gptel-temperature temperature)
+           (result (gptel-request request
+                     :system   system
+                     :callback handler)))
+      (when polymuse-debug
         (polymuse--debug-log "\n\nREQUEST:\n\n%s\n\nEND REQUEST\n\n"
-                             (polymuse--format-json request))
-        result))))
+                             (polymuse--format-json (json-serialize request))))
+      result)))
 
 (defun polymuse-find-backend (backend-id)
   "Given a BACKEND-ID, find the associated Polymuse backend."
