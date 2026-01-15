@@ -249,7 +249,7 @@ previous review history."
          :context-backward-ratio 0.68
          :include-previous-review nil
          :mode-prompts '((prog-mode . "Review code in `focus-region`. Priority: (1) bugs/logic errors; (2) security issues (injection, validation); (3) performance problems; (4) better standard library usage. Suggest specific functions/patterns.")
-                         (text-mode . "Review prose in `focus-region` for clarity and correctness. Keep feedback brief."))))
+                         (text-mode . "Read the prose in `focus-region` and share your thoughts. What's working? What could be more engaging? Think about characters, pacing, emotional impact, voice. Share ideas and reactions that come to mind, not just corrections."))))
 
     (deepseek-coder-6.7b
      . ,(make-polymuse-config
@@ -994,18 +994,19 @@ mock response, making it suitable for testing without network calls."
 
 (defcustom polymuse-system-prompt
   (string-join
-   '("You are an expert programming assistant providing real-time feedback as the user writes."
-     "Be concise, specific, and actionable. Focus on insights the user might miss, not obvious facts."
-     "Prioritize: bugs/errors > design issues > style/clarity > minor improvements."
-     "If you have nothing substantive to add, say so briefly rather than stating the obvious."
-     "Keep responses under 200 words unless addressing complex issues.")
+   '("You are a creative assistant providing real-time feedback as the user writes."
+     "Offer varied, interesting insights and suggestions. Don't be afraid to explore different angles or possibilities."
+     "For prose, focus on what makes the content engaging - characters, plot, voice, emotional impact, and reader experience."
+     "For code, balance between catching important issues and suggesting improvements that make things more elegant or clear."
+     "Share observations, ideas, and reactions. If something sparks a thought or possibility, share it."
+     "Keep responses conversational and under 200 words unless exploring something particularly interesting.")
    " ")
   "Base system prompt for polymuse."
   :type 'string)
 
 (defcustom polymuse-mode-prompts
   '((prog-mode . "Review the code in `focus-region`. Check for: (1) bugs, edge cases, or incorrect logic; (2) potential errors or exceptions not handled; (3) unclear naming or confusing structure; (4) opportunities to simplify or use better patterns/libraries. Ignore trivial style issues.")
-    (text-mode . "Review the prose in `focus-region` for: (1) clarity and flow; (2) awkward phrasing or ambiguity; (3) logical gaps or weak arguments; (4) tone consistency. Focus on meaning and readability, not nitpicky grammar."))
+    (text-mode . "Read the prose in `focus-region` and share your thoughts. What's working? What could be more engaging? Consider the characters - are they compelling and consistent? Does the pacing feel right? Are there moments that could have more emotional impact? What about the voice and style - does it draw you in? Share ideas, reactions, or possibilities that come to mind. Skip grammar and mechanics unless something truly disrupts the reading experience."))
   "Mode-specific prompt for the polymuse over-the-shoulder assistant."
   :type '(alist :key-type symbol :value-type string))
 
