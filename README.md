@@ -256,6 +256,27 @@ Provides a typewriter effect for inserting text into Emacs buffers, gradually re
 
 ## Installation
 
+### Using Nix (Recommended for NixOS/Home Manager users)
+
+This repository provides a Nix flake with an overlay for easy integration into NixOS or Home Manager configurations.
+
+```nix
+{
+  inputs.polymuse.url = "github:fudoniten/polymuse";
+
+  # In your Home Manager or NixOS configuration:
+  nixpkgs.overlays = [ polymuse.overlays.default ];
+
+  programs.emacs.extraPackages = epkgs: with epkgs; [
+    polymuse  # Includes dependencies: gptel, markdown-mode
+    canon
+    typewrite
+  ];
+}
+```
+
+See [NIX_USAGE.md](NIX_USAGE.md) for detailed Nix installation instructions and examples.
+
 ### Manual Installation
 
 1. Clone this repository:
