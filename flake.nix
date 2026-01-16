@@ -12,10 +12,18 @@
         pkgs = nixpkgs.legacyPackages.${system};
 
         # Helper function to build Emacs packages
-        buildEmacsPackage = { pname, version ? "0.1.0", src, dependencies ? [] }:
+        buildEmacsPackage = { pname, version ? "0.1.0", dependencies ? [] }:
           pkgs.emacsPackages.trivialBuild {
-            inherit pname version src;
+            inherit pname version;
+            src = ./.;
             packageRequires = dependencies;
+
+            # Ensure only the relevant .el file is included
+            buildPhase = ''
+              runHook preBuild
+              emacs -L . --batch -f batch-byte-compile ${pname}.el
+              runHook postBuild
+            '';
           };
       in
       {
@@ -23,21 +31,18 @@
           # typewrite.el - Typewriter effect for text insertion
           typewrite = buildEmacsPackage {
             pname = "typewrite";
-            src = ./.;
             version = "0.1.0";
           };
 
           # canon.el - Creative work entity management
           canon = buildEmacsPackage {
             pname = "canon";
-            src = ./.;
             version = "0.1.0";
           };
 
           # polymuse.el - AI-powered coding assistant
           polymuse = buildEmacsPackage {
             pname = "polymuse";
-            src = ./.;
             version = "0.1.0";
             dependencies = with pkgs.emacsPackages; [
               gptel
@@ -61,12 +66,17 @@
     ) // {
       # Overlay for use in NixOS/Home Manager configurations
       overlays.default = final: prev: {
-        emacsPackages = prev.emacsPackages // {
+        emacsPackages = prev.emacsPackages.overrideScope (eself: esuper: {
           typewrite = final.emacsPackages.trivialBuild {
             pname = "typewrite";
             version = "0.1.0";
             src = self;
             packageRequires = [];
+            buildPhase = ''
+              runHook preBuild
+              emacs -L . --batch -f batch-byte-compile typewrite.el
+              runHook postBuild
+            '';
           };
 
           canon = final.emacsPackages.trivialBuild {
@@ -74,18 +84,28 @@
             version = "0.1.0";
             src = self;
             packageRequires = [];
+            buildPhase = ''
+              runHook preBuild
+              emacs -L . --batch -f batch-byte-compile canon.el
+              runHook postBuild
+            '';
           };
 
           polymuse = final.emacsPackages.trivialBuild {
             pname = "polymuse";
             version = "0.1.0";
             src = self;
-            packageRequires = with final.emacsPackages; [
+            packageRequires = with eself; [
               gptel
               markdown-mode
             ];
+            buildPhase = ''
+              runHook preBuild
+              emacs -L . --batch -f batch-byte-compile polymuse.el
+              runHook postBuild
+            '';
           };
-        };
+        });
       };
     };
 }

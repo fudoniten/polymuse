@@ -72,7 +72,7 @@ In your `flake.nix`:
 
 ### Using Packages Directly (without overlay)
 
-You can also reference the packages directly from the flake:
+You can also reference the packages directly from the flake using `overrideScope`:
 
 ```nix
 {
@@ -83,7 +83,23 @@ You can also reference the packages directly from the flake:
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
     in {
-      # Use in your home-manager config
+      # Method 1: Using overrideScope (recommended for proper integration)
+      programs.emacs = {
+        enable = true;
+        package = pkgs.emacs;
+        extraPackages = epkgs:
+          let
+            polymuseScope = epkgs.overrideScope (eself: esuper: {
+              inherit (polymuse.packages.${system}) polymuse canon typewrite;
+            });
+          in with polymuseScope; [
+            polymuse
+            canon
+            typewrite
+          ];
+      };
+
+      # Method 2: Direct package references (simpler but less integrated)
       programs.emacs.extraPackages = epkgs: [
         polymuse.packages.${system}.polymuse
         polymuse.packages.${system}.canon
