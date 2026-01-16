@@ -1,0 +1,14 @@
+# Nix build results
+result
+result-*
+
+# Emacs artifacts
+*~
+*.elc
+\#*\#
+.\#*
+
+# Temporary files
+*.bak
+*.swp
+*.swo
