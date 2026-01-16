@@ -18,18 +18,21 @@
 (ert-deftest typewrite-test-simple-insertion ()
   "Test that text is inserted synchronously in test mode."
   (typewrite-test-with-job "Hello, world!"
+    (ignore test-job)
     (with-current-buffer test-buffer
       (should (string= "Hello, world!" (buffer-string))))))
 
 (ert-deftest typewrite-test-empty-string ()
   "Test that empty string works correctly."
   (typewrite-test-with-job ""
+    (ignore test-job)
     (with-current-buffer test-buffer
       (should (string= "" (buffer-string))))))
 
 (ert-deftest typewrite-test-multiline-text ()
   "Test insertion of multiline text."
   (typewrite-test-with-job "Line 1\nLine 2\nLine 3"
+    (ignore test-job)
     (with-current-buffer test-buffer
       (should (string-match-p "Line 1" (buffer-string)))
       (should (string-match-p "Line 2" (buffer-string)))
@@ -73,6 +76,7 @@
   "Test that tests don't pollute global state."
   (let ((initial-jobs (typewrite-state-jobs typewrite--default-state)))
     (typewrite-test-with-job "Test"
+      (ignore test-job)
       ;; Inside test, do something
       (should (buffer-live-p test-buffer)))
     ;; After test, global state should be unchanged
@@ -173,6 +177,7 @@
 (ert-deftest typewrite-test-unicode-characters ()
   "Test that Unicode characters are handled correctly."
   (typewrite-test-with-job "Hello 世界 🌍"
+    (ignore test-job)
     (with-current-buffer test-buffer
       (should (string-match-p "世界" (buffer-string)))
       (should (string-match-p "🌍" (buffer-string))))))
@@ -180,6 +185,7 @@
 (ert-deftest typewrite-test-special-characters ()
   "Test insertion of special characters."
   (typewrite-test-with-job "Tab\there\nNewline\rCarriage"
+    (ignore test-job)
     (with-current-buffer test-buffer
       (should (string-match-p "Tab" (buffer-string)))
       (should (string-match-p "here" (buffer-string))))))
