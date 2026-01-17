@@ -345,7 +345,7 @@ the types as a list of strings."
    (goto-char (point-min))
    (let* ((re (format "^\\* +%s\\s-*$" (regexp-quote type)))
           (found (when (re-search-forward re nil t)
-                   (line-beginning-position))))
+                   (match-beginning 0))))
      (unless found
        ;; Create a new  top-level heading at end of buffer.
        (goto-char (point-max))
@@ -568,7 +568,7 @@ Suggestions are added to a `Suggestions' subheading for user review."
           (canon--append-to-subheading-text
            pos
            "Suggestions"
-           (format "\n*** Suggestion (%s)\n%s\n"
+           (format "\nSuggestion (%s):\n%s\n"
                    (format-time-string "%Y-%m-%d %H:%M:%S")
                    suggestion))
           (format "Suggestion added to entity '%s' under 'Suggestions' section. The user can review and apply it manually."
@@ -587,7 +587,7 @@ added to a `Suggestions' subheading for user review."
           (canon--append-to-subheading-text
            pos
            "Suggestions"
-           (format "\n*** Suggestion for '%s' section (%s)\n%s\n"
+           (format "\nSuggestion for '%s' section (%s):\n%s\n"
                    section
                    (format-time-string "%Y-%m-%d %H:%M:%S")
                    suggestion))
