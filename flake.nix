@@ -151,6 +151,11 @@
               version = "0.1.0";
               src = filterSource "typewrite" self;
               packageRequires = [];
+              buildPhase = ''
+                runHook preBuild
+                emacs -L . --batch -f batch-byte-compile typewrite.el
+                runHook postBuild
+              '';
             };
 
             canon = final.emacsPackages.trivialBuild {
@@ -158,6 +163,11 @@
               version = "0.1.0";
               src = filterSource "canon" self;
               packageRequires = [];
+              buildPhase = ''
+                runHook preBuild
+                emacs -L . --batch -f batch-byte-compile canon.el
+                runHook postBuild
+              '';
             };
 
             polymuse = final.emacsPackages.trivialBuild {
@@ -168,6 +178,11 @@
                 gptel
                 markdown-mode
               ];
+              buildPhase = ''
+                runHook preBuild
+                emacs -L . --batch -f batch-byte-compile polymuse.el
+                runHook postBuild
+              '';
             };
           };
         };
