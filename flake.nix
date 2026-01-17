@@ -7,50 +7,41 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
-    let
-      # Package builder functions that can be used with any emacsPackages scope
-      mkTypewrite = epkgs: epkgs.trivialBuild {
-        pname = "typewrite";
-        version = "0.1.0";
-        src = self;
-        packageRequires = [];
-        buildPhase = ''
-          runHook preBuild
-          emacs -L . --batch -f batch-byte-compile typewrite.el
-          runHook postBuild
-        '';
-      };
-
-      mkCanon = epkgs: epkgs.trivialBuild {
-        pname = "canon";
-        version = "0.1.0";
-        src = self;
-        packageRequires = [];
-        buildPhase = ''
-          runHook preBuild
-          emacs -L . --batch -f batch-byte-compile canon.el
-          runHook postBuild
-        '';
-      };
-
-      mkPolymuse = epkgs: epkgs.trivialBuild {
-        pname = "polymuse";
-        version = "0.1.0";
-        src = self;
-        packageRequires = with epkgs; [
-          gptel
-          markdown-mode
-        ];
-        buildPhase = ''
-          runHook preBuild
-          emacs -L . --batch -f batch-byte-compile polymuse.el
-          runHook postBuild
-        '';
-      };
-    in
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+
+        # Helper to create filtered source with only specific files
+        mkFilteredSrc = filename:
+          pkgs.runCommand "filtered-src" {} ''
+            mkdir -p $out
+            cp ${self}/${filename} $out/
+          '';
+
+        # Package builder functions that can be used with any emacsPackages scope
+        mkTypewrite = epkgs: epkgs.trivialBuild {
+          pname = "typewrite";
+          version = "0.1.0";
+          src = mkFilteredSrc "typewrite.el";
+          packageRequires = [];
+        };
+
+        mkCanon = epkgs: epkgs.trivialBuild {
+          pname = "canon";
+          version = "0.1.0";
+          src = mkFilteredSrc "canon.el";
+          packageRequires = [];
+        };
+
+        mkPolymuse = epkgs: epkgs.trivialBuild {
+          pname = "polymuse";
+          version = "0.1.0";
+          src = mkFilteredSrc "polymuse.el";
+          packageRequires = with epkgs; [
+            gptel
+            markdown-mode
+          ];
+        };
       in
       {
         packages = rec {
@@ -83,12 +74,40 @@
       }
     ) // {
       # Overlay for use in NixOS/Home Manager configurations
-      overlays.default = final: prev: {
-        emacsPackages = prev.emacsPackages.overrideScope (eself: esuper: {
-          typewrite = mkTypewrite eself;
-          canon = mkCanon eself;
-          polymuse = mkPolymuse eself;
-        });
-      };
+      overlays.default = final: prev:
+        let
+          # Helper to create filtered source with only specific files
+          mkFilteredSrc = filename:
+            final.runCommand "filtered-src" {} ''
+              mkdir -p $out
+              cp ${self}/${filename} $out/
+            '';
+        in {
+          emacsPackages = prev.emacsPackages.overrideScope (eself: esuper: {
+            typewrite = eself.trivialBuild {
+              pname = "typewrite";
+              version = "0.1.0";
+              src = mkFilteredSrc "typewrite.el";
+              packageRequires = [];
+            };
+
+            canon = eself.trivialBuild {
+              pname = "canon";
+              version = "0.1.0";
+              src = mkFilteredSrc "canon.el";
+              packageRequires = [];
+            };
+
+            polymuse = eself.trivialBuild {
+              pname = "polymuse";
+              version = "0.1.0";
+              src = mkFilteredSrc "polymuse.el";
+              packageRequires = with eself; [
+                gptel
+                markdown-mode
+              ];
+            };
+          });
+        };
     };
 }
