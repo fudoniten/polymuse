@@ -70,9 +70,9 @@ In your `flake.nix`:
 }
 ```
 
-### Using Packages Directly (without overlay)
+### Using Packages with overrideScope (without overlay)
 
-You can also reference the packages directly from the flake using `overrideScope`:
+If you need to use `overrideScope` (for example, to customize other packages in your scope), use the builder functions from `lib`:
 
 ```nix
 {
@@ -83,23 +83,46 @@ You can also reference the packages directly from the flake using `overrideScope
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
     in {
-      # Method 1: Using overrideScope (recommended for proper integration)
       programs.emacs = {
         enable = true;
         package = pkgs.emacs;
         extraPackages = epkgs:
           let
-            polymuseScope = epkgs.overrideScope (eself: esuper: {
-              inherit (polymuse.packages.${system}) polymuse canon typewrite;
+            # Get the builder functions from polymuse.lib
+            polymuseLib = polymuse.lib.${system};
+
+            # Use overrideScope with the builder functions
+            updatedScope = epkgs.overrideScope (eself: esuper: {
+              # The builder functions take the emacsPackages scope and return built packages
+              polymuse = polymuseLib.mkPolymuse eself;
+              canon = polymuseLib.mkCanon eself;
+              typewrite = polymuseLib.mkTypewrite eself;
+
+              # You can also override other packages here
+              # gptel = pkgsUnstable.emacsPackages.gptel;
             });
-          in with polymuseScope; [
+          in with updatedScope; [
             polymuse
             canon
             typewrite
           ];
       };
+    };
+}
+```
 
-      # Method 2: Direct package references (simpler but less integrated)
+### Using Pre-built Packages Directly
+
+For simpler use cases where you don't need `overrideScope`:
+
+```nix
+{
+  inputs.polymuse.url = "github:fudoniten/polymuse";
+
+  outputs = { self, nixpkgs, polymuse, ... }:
+    let
+      system = "x86_64-linux";
+    in {
       programs.emacs.extraPackages = epkgs: [
         polymuse.packages.${system}.polymuse
         polymuse.packages.${system}.canon
@@ -109,16 +132,36 @@ You can also reference the packages directly from the flake using `overrideScope
 }
 ```
 
-## Available Packages
+## Available Outputs
+
+### Packages
+
+The flake provides pre-built packages for direct use:
+
+- **`packages.${system}.polymuse`** - AI-powered over-the-shoulder coding assistant
+  - Dependencies: gptel, markdown-mode
+- **`packages.${system}.canon`** - Creative work entity management system
+  - No additional dependencies
+- **`packages.${system}.typewrite`** - Typewriter-style text insertion effect
+  - No additional dependencies
+
+### Lib (Package Builders)
+
+For use with `overrideScope`, the flake exports builder functions:
+
+- **`lib.${system}.mkPolymuse`** - Function that takes an emacsPackages scope and returns polymuse
+- **`lib.${system}.mkCanon`** - Function that takes an emacsPackages scope and returns canon
+- **`lib.${system}.mkTypewrite`** - Function that takes an emacsPackages scope and returns typewrite
+
+These functions are useful when you need to build the packages against a custom emacsPackages scope.
+
+### Overlay
 
 The overlay adds three packages to `emacsPackages`:
 
 - **`polymuse`** - AI-powered over-the-shoulder coding assistant
-  - Dependencies: gptel, markdown-mode
 - **`canon`** - Creative work entity management system
-  - No additional dependencies
 - **`typewrite`** - Typewriter-style text insertion effect
-  - No additional dependencies
 
 ## Development Shell
 
