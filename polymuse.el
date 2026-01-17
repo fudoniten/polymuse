@@ -1585,6 +1585,8 @@ a plist containing:
               (list `(tools . ((instructions
                                 . "If you need more info, respond with JSON ONLY: {\"action\":\"tool-call\",\"tool\":\"<name>\",\"arguments\":{\"arg\":\"value\"}}. You'll receive the result and can then provide your review.")
                                (tool-list . ,tools-prompt)))))))
+      (environment
+       . ((major_mode . ,(symbol-name major-mode-sym))))
       (context
        . ((backward-context . ,backward-context)
           (forward-context  . ,forward-context)

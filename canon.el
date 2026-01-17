@@ -178,15 +178,19 @@ SUBHEADING is the entry title, minus the leading *s."
     (goto-char entity-pos)
     (org-with-wide-buffer
      (let ((end (save-excursion (org-end-of-subtree t t))))
-       (unless (re-search-forward
-                (concat "^\\*+ +" (regexp-quote subheading) "\\b") end t)
-         ;; Create the subheading at end of subtree if missing
+       (if (re-search-forward
+            (concat "^\\*+ +" (regexp-quote subheading) "\\b") end t)
+           ;; Found: point is at end of match (end of subheading line).
+           ;; Move to start of body (next line).
+           (forward-line 1)
+         ;; Not found: create it at end of entity subtree.
          (goto-char end)
          (insert (format "\n*** %s\n" subheading))
          ;; Recalculate end after insertion since buffer has changed
-         (setq end (save-excursion (goto-char entity-pos) (org-end-of-subtree t t))))
-       ;; Now we're on the subheading line
-       (forward-line 1)
+         (setq end (save-excursion (goto-char entity-pos) (org-end-of-subtree t t)))
+         ;; After insert, point is already at start of body (line after heading).
+         )
+       ;; Now we're at the start of the subheading body.
        (let* ((start (point))
               (sub-end (or (save-excursion
                              (when (re-search-forward "^\\*+ " end t)
@@ -208,16 +212,19 @@ entity subtree and NEW-TEXT will become its initial contents."
     (org-with-wide-buffer
      (let ((end (save-excursion (org-end-of-subtree t t))))
        ;; Ensure the subheading exists; create if missing.
-       (unless (re-search-forward
-                (concat "^\\*+ +" (regexp-quote subheading) "\\b") end t)
+       (if (re-search-forward
+            (concat "^\\*+ +" (regexp-quote subheading) "\\b") end t)
+           ;; Found: point is at end of match (end of subheading line).
+           ;; Move to start of body (next line).
+           (forward-line 1)
+         ;; Not found: create it at end of entity subtree.
          (goto-char end)
          (insert (format "\n*** %s\n" subheading))
          ;; Recalculate end after insertion since buffer has changed
          (setq end (save-excursion (goto-char entity-pos) (org-end-of-subtree t t)))
-         (forward-line 1))
-       ;; Now we're on or just after the subheading line.
-       (when (looking-at "^\\*+") ; if we're still on the heading line
-         (forward-line 1))
+         ;; After insert, point is already at start of body (line after heading).
+         )
+       ;; Now we're at the start of the subheading body.
        (let* ((body-start (point))
               (sub-end (or (save-excursion
                              (when (re-search-forward "^\\*+ " end t)
@@ -338,13 +345,15 @@ the types as a list of strings."
    (goto-char (point-min))
    (let* ((re (format "^\\* +%s\\s-*$" (regexp-quote type)))
           (found (when (re-search-forward re nil t)
-                   (line-beginning-position))))
+                   (match-beginning 0))))
      (unless found
        ;; Create a new  top-level heading at end of buffer.
        (goto-char (point-max))
        (canon--ensure-one-blank-line)
        (insert (format "* %s\n" type))
-       (setq found (line-beginning-position)))
+       ;; After insert, point is on the line after the heading.
+       ;; Use 0 to get the beginning of the previous line (the heading).
+       (setq found (line-beginning-position 0)))
      found)))
 
 (defun canon--insert-entity-under-type (type id)
@@ -559,7 +568,7 @@ Suggestions are added to a `Suggestions' subheading for user review."
           (canon--append-to-subheading-text
            pos
            "Suggestions"
-           (format "\n*** Suggestion (%s)\n%s\n"
+           (format "\nSuggestion (%s):\n%s\n"
                    (format-time-string "%Y-%m-%d %H:%M:%S")
                    suggestion))
           (format "Suggestion added to entity '%s' under 'Suggestions' section. The user can review and apply it manually."
@@ -578,7 +587,7 @@ added to a `Suggestions' subheading for user review."
           (canon--append-to-subheading-text
            pos
            "Suggestions"
-           (format "\n*** Suggestion for '%s' section (%s)\n%s\n"
+           (format "\nSuggestion for '%s' section (%s):\n%s\n"
                    section
                    (format-time-string "%Y-%m-%d %H:%M:%S")
                    suggestion))
