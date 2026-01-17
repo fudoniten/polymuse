@@ -530,7 +530,7 @@ This is a safe, read-only tool for Polymuse LLM integration."
              ((= level 2)
               (when types
                 (let* ((current-type (car types))
-                       (type-name (car current-type))
+                       (_type-name (car current-type))
                        (id (org-entry-get nil "ID")))
                   (when id
                     (setcdr current-type
