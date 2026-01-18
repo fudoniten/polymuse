@@ -126,12 +126,31 @@
       # Overlay for use in NixOS/Home Manager configurations
       overlays.default = final: prev:
         let
-          # Helper to create a source directory containing only specific files
-          # This is more reliable than cleanSourceWith for our use case
-          makePackageSource = pname: src: final.runCommand "${pname}-source" {} ''
-            mkdir -p $out
-            cp ${src}/${pname}.el $out/
-          '';
+          # Helper to create a source directory containing only the specific package file
+          # This uses cleanSourceWith to filter out all other .el files
+          makePackageSource = pname: src: final.lib.cleanSourceWith {
+            inherit src;
+            filter = path: type:
+              let
+                baseName = baseNameOf path;
+                # Only include the specific package file we want
+                # Exclude all test files and files from other packages
+                isTargetFile = baseName == "${pname}.el";
+                isTestFile = final.lib.hasSuffix "-test.el" baseName;
+                isElFile = final.lib.hasSuffix ".el" baseName;
+                # Exclude other package files explicitly
+                isOtherPackage =
+                  (baseName == "polymuse.el" && pname != "polymuse") ||
+                  (baseName == "canon.el" && pname != "canon") ||
+                  (baseName == "typewrite.el" && pname != "typewrite");
+              in
+                # Only include the target file, exclude all other .el files
+                if isElFile then
+                  isTargetFile
+                else
+                  # Allow directories and flake files for source metadata
+                  type == "directory" || baseName == "flake.nix" || baseName == "flake.lock";
+          };
         in
         {
           emacsPackages = prev.emacsPackages // {
@@ -140,11 +159,6 @@
               version = "0.1.0";
               src = makePackageSource "typewrite" self;
               packageRequires = [];
-              buildPhase = ''
-                runHook preBuild
-                emacs -L . --batch -f batch-byte-compile typewrite.el
-                runHook postBuild
-              '';
             };
 
             canon = final.emacsPackages.trivialBuild {
@@ -152,11 +166,6 @@
               version = "0.1.0";
               src = makePackageSource "canon" self;
               packageRequires = [];
-              buildPhase = ''
-                runHook preBuild
-                emacs -L . --batch -f batch-byte-compile canon.el
-                runHook postBuild
-              '';
             };
 
             polymuse = final.emacsPackages.trivialBuild {
@@ -167,11 +176,6 @@
                 gptel
                 markdown-mode
               ];
-              buildPhase = ''
-                runHook preBuild
-                emacs -L . --batch -f batch-byte-compile polymuse.el
-                runHook postBuild
-              '';
             };
           };
         };
