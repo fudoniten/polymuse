@@ -16,6 +16,7 @@ An AI-powered "over-the-shoulder" coding assistant for Emacs that provides conti
 - Emacs 29.3 or later
 - gptel 0.9.0 or later
 - markdown-mode 2.5 or later
+- typewrite 0.1.0 or later (for animated output display)
 
 ## Quick Start
 
@@ -99,7 +100,8 @@ This package provides a Nix flake for easy integration into NixOS or Home Manage
   nixpkgs.overlays = [ polymuse.overlays.default ];
 
   programs.emacs.extraPackages = epkgs: with epkgs; [
-    polymuse  # Includes dependencies: gptel, markdown-mode
+    polymuse  # Note: Requires typewrite package (separate repository)
+    # Also depends on: gptel, markdown-mode
   ];
 }
 ```
@@ -133,6 +135,24 @@ This package provides a Nix flake for easy integration into NixOS or Home Manage
   :config
   (setq polymuse-default-interval 60))
 ```
+
+## Optional Integrations
+
+### Canon Integration
+
+Polymuse includes optional integration with `canon.el` (a separate package) for tracking characters, locations, and other entities in prose writing or project documentation.
+
+When `canon-mode` is active alongside `polymuse-mode`, the AI reviewer automatically gains access to tools for:
+- Looking up entities (characters, locations, architecture docs, etc.)
+- Searching entities by properties
+- Suggesting updates to your canon (appended safely without modifying existing content)
+
+To use canon integration:
+1. Install the `canon` package separately (from https://github.com/fudoniten/canon)
+2. Enable both `canon-mode` and `polymuse-mode` in your buffer
+3. The AI reviewer will automatically detect and use canon tools
+
+See the `examples/` directory for sample canon files demonstrating prose writing and code documentation use cases.
 
 ## Development & Testing
 

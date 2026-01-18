@@ -20,6 +20,8 @@
             packageRequires = with pkgs.emacsPackages; [
               gptel
               markdown-mode
+              # Note: typewrite is a separate package - ensure it's available
+              # If not in nixpkgs, you may need to add it as a flake input
             ];
           };
 
@@ -32,6 +34,7 @@
             emacs
             emacsPackages.gptel
             emacsPackages.markdown-mode
+            # TODO: Add typewrite when available in nixpkgs or as flake input
           ];
         };
       }
@@ -46,6 +49,7 @@
             packageRequires = with final.emacsPackages; [
               gptel
               markdown-mode
+              # TODO: Add typewrite when available in nixpkgs or as flake input
             ];
           };
         };

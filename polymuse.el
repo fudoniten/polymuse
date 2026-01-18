@@ -9,7 +9,7 @@
 ;; Version: 0.0.1
 ;; Keywords: docs outlines processes terminals text tools
 ;; Homepage: https://github.com/niten/polymuse
-;; Package-Requires: ((emacs "29.3") (gptel "0.9.0") (markdown-mode "2.5"))
+;; Package-Requires: ((emacs "29.3") (gptel "0.9.0") (markdown-mode "2.5") (typewrite "0.1.0"))
 ;;
 ;; This file is not part of GNU Emacs.
 ;;
@@ -26,7 +26,8 @@
 ;; - Customizable review intervals and instructions
 ;; - Typewriter-style animated output for a pleasant UX
 ;; - Tool profiles that give the LLM access to project-specific information
-;; - Integration with canon.el for character/location tracking in prose
+;; - Optional integration with canon.el (separate package) for character/location
+;;   tracking in prose
 ;;
 ;; Quick Start:
 ;; 1. Set up a backend: M-x polymuse-define-default-backend
@@ -47,7 +48,8 @@
 ;;   (prose-writing, code-review, architecture, debugging)
 ;; - File-local tools can be defined in .polymuse-tools.el
 ;;
-;; When canon-mode is active, Polymuse automatically provides tools for:
+;; Optional: When canon-mode is active (requires separate canon.el package),
+;; Polymuse automatically provides tools for:
 ;; - Looking up characters, locations, and other entities
 ;; - Searching entities by properties
 ;; - Suggesting modifications (appended safely, never clobbering)

@@ -1,5 +1,9 @@
 # Polymuse Examples
 
+> **Note**: These examples demonstrate Polymuse's optional integration with `canon.el`,
+> which is a **separate package**. To use these examples, you must install the
+> `canon` package from https://github.com/fudoniten/canon
+
 This directory contains example files demonstrating Polymuse's canon integration and tool system.
 
 ## Example Canon Files
