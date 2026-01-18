@@ -1,5 +1,5 @@
 {
-  description = "A collection of Emacs packages for enhanced writing and development workflows";
+  description = "Polymuse - AI-powered over-the-shoulder coding assistant for Emacs";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -7,110 +7,23 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
-    let
-      # Package builder functions that can be used with any emacsPackages scope
-      mkTypewrite = epkgs: epkgs.trivialBuild {
-        pname = "typewrite";
-        version = "0.1.0";
-        src = self;
-        packageRequires = [];
-        buildPhase = ''
-          runHook preBuild
-          emacs -L . --batch -f batch-byte-compile typewrite.el
-          runHook postBuild
-        '';
-      };
-
-      mkCanon = epkgs: epkgs.trivialBuild {
-        pname = "canon";
-        version = "0.1.0";
-        src = self;
-        packageRequires = [];
-        buildPhase = ''
-          runHook preBuild
-          emacs -L . --batch -f batch-byte-compile canon.el
-          runHook postBuild
-        '';
-      };
-
-      mkPolymuse = epkgs: epkgs.trivialBuild {
-        pname = "polymuse";
-        version = "0.1.0";
-        src = self;
-        packageRequires = with epkgs; [
-          gptel
-          markdown-mode
-        ];
-        buildPhase = ''
-          runHook preBuild
-          emacs -L . --batch -f batch-byte-compile polymuse.el
-          runHook postBuild
-        '';
-      };
-    in
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-
-        # Helper function to build Emacs packages
-        buildEmacsPackage = { pname, version ? "0.1.0", src, dependencies ? [] }:
-          pkgs.emacsPackages.trivialBuild {
-            inherit pname version src;
-            packageRequires = dependencies;
-          };
-
-        # Helper to filter source files for a specific package
-        filterSource = pname: src:
-          pkgs.lib.cleanSourceWith {
-            inherit src;
-            filter = path: type:
-              let
-                baseName = baseNameOf path;
-                # Include only the main file and not test files or other packages
-                isMainFile = baseName == "${pname}.el";
-                isTestFile = pkgs.lib.hasSuffix "-test.el" baseName;
-                isOtherPackage = (baseName == "polymuse.el" && pname != "polymuse") ||
-                                 (baseName == "canon.el" && pname != "canon") ||
-                                 (baseName == "typewrite.el" && pname != "typewrite");
-              in
-                # Include if it's the main file, or if it's not a test file and not another package
-                isMainFile || (!isTestFile && !isOtherPackage && baseName != "flake.nix" && baseName != "flake.lock");
-          };
       in
       {
         packages = rec {
-          # typewrite.el - Typewriter effect for text insertion
-          typewrite = buildEmacsPackage {
-            pname = "typewrite";
-            src = filterSource "typewrite" ./.;
-            version = "0.1.0";
-          };
-
-          # canon.el - Creative work entity management
-          canon = buildEmacsPackage {
-            pname = "canon";
-            src = filterSource "canon" ./.;
-            version = "0.1.0";
-          };
-
-          # polymuse.el - AI-powered coding assistant
-          polymuse = buildEmacsPackage {
+          polymuse = pkgs.emacsPackages.trivialBuild {
             pname = "polymuse";
-            src = filterSource "polymuse" ./.;
             version = "0.1.0";
-            dependencies = with pkgs.emacsPackages; [
+            src = ./.;
+            packageRequires = with pkgs.emacsPackages; [
               gptel
               markdown-mode
             ];
           };
 
-          # Default package is polymuse (the main package)
           default = polymuse;
-        };
-
-        # Export the builder functions for use in overrideScope
-        lib = {
-          inherit mkTypewrite mkCanon mkPolymuse;
         };
 
         # Development shell with Emacs and dependencies
@@ -124,60 +37,18 @@
       }
     ) // {
       # Overlay for use in NixOS/Home Manager configurations
-      overlays.default = final: prev:
-        let
-          # Helper to create a source directory containing only the specific package file
-          # This uses cleanSourceWith to filter out all other .el files
-          makePackageSource = pname: src: final.lib.cleanSourceWith {
-            inherit src;
-            filter = path: type:
-              let
-                baseName = baseNameOf path;
-                # Only include the specific package file we want
-                # Exclude all test files and files from other packages
-                isTargetFile = baseName == "${pname}.el";
-                isTestFile = final.lib.hasSuffix "-test.el" baseName;
-                isElFile = final.lib.hasSuffix ".el" baseName;
-                # Exclude other package files explicitly
-                isOtherPackage =
-                  (baseName == "polymuse.el" && pname != "polymuse") ||
-                  (baseName == "canon.el" && pname != "canon") ||
-                  (baseName == "typewrite.el" && pname != "typewrite");
-              in
-                # Only include the target file, exclude all other .el files
-                if isElFile then
-                  isTargetFile
-                else
-                  # Allow directories and flake files for source metadata
-                  type == "directory" || baseName == "flake.nix" || baseName == "flake.lock";
-          };
-        in
-        {
-          emacsPackages = prev.emacsPackages // {
-            typewrite = final.emacsPackages.trivialBuild {
-              pname = "typewrite";
-              version = "0.1.0";
-              src = makePackageSource "typewrite" self;
-              packageRequires = [];
-            };
-
-            canon = final.emacsPackages.trivialBuild {
-              pname = "canon";
-              version = "0.1.0";
-              src = makePackageSource "canon" self;
-              packageRequires = [];
-            };
-
-            polymuse = final.emacsPackages.trivialBuild {
-              pname = "polymuse";
-              version = "0.1.0";
-              src = makePackageSource "polymuse" self;
-              packageRequires = with final.emacsPackages; [
-                gptel
-                markdown-mode
-              ];
-            };
+      overlays.default = final: prev: {
+        emacsPackages = prev.emacsPackages // {
+          polymuse = final.emacsPackages.trivialBuild {
+            pname = "polymuse";
+            version = "0.1.0";
+            src = self;
+            packageRequires = with final.emacsPackages; [
+              gptel
+              markdown-mode
+            ];
           };
         };
+      };
     };
 }
