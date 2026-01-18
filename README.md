@@ -90,7 +90,7 @@ M-x polymuse-define-default-backend
 
 ### Using Nix (Recommended for NixOS/Home Manager users)
 
-This package provides a Nix flake for easy integration into NixOS or Home Manager configurations.
+This package provides a Nix flake for easy integration into NixOS or Home Manager configurations. The flake automatically includes the `typewrite` dependency, so you don't need to add it separately.
 
 ```nix
 {
@@ -100,8 +100,7 @@ This package provides a Nix flake for easy integration into NixOS or Home Manage
   nixpkgs.overlays = [ polymuse.overlays.default ];
 
   programs.emacs.extraPackages = epkgs: with epkgs; [
-    polymuse  # Note: Requires typewrite package (separate repository)
-    # Also depends on: gptel, markdown-mode
+    polymuse  # Automatically includes typewrite, gptel, and markdown-mode
   ];
 }
 ```
