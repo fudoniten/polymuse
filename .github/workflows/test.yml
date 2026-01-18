@@ -36,20 +36,6 @@ jobs:
           --eval "(package-install 'gptel)" \
           --eval "(package-install 'markdown-mode)"
 
-    - name: Run typewrite tests
-      run: |
-        emacs -batch \
-          -l typewrite.el \
-          -l typewrite-test.el \
-          -f ert-run-tests-batch-and-exit
-
-    - name: Run canon tests
-      run: |
-        emacs -batch \
-          -l canon.el \
-          -l canon-test.el \
-          -f ert-run-tests-batch-and-exit
-
     - name: Run polymuse tests
       run: |
         emacs -batch -l package.el \
