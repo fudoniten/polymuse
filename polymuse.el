@@ -1214,41 +1214,51 @@ active minor modes.")
                   (cons beg new-end))))
           (error nil))))))
 
+(defun polymuse--get-context (direction unit-type limit &optional buffer pt)
+  "Generic context extraction function.
+
+DIRECTION is either 'backward or 'forward.
+UNIT-TYPE is either 'paragraph or 'sexp.
+LIMIT is the maximum number of characters to extract.
+BUFFER and PT specify where to extract from (defaults to current buffer and point)."
+  (with-current-buffer (or buffer (current-buffer))
+    (let* ((move-fn (pcase (cons direction unit-type)
+                      ('(backward . paragraph) #'backward-paragraph)
+                      ('(forward . paragraph) #'forward-paragraph)
+                      ('(backward . sexp) #'backward-sexp)
+                      ('(forward . sexp) #'forward-sexp)
+                      (_ (error "Invalid direction/unit-type combination: %s %s" 
+                                direction unit-type))))
+           (wrapper-fn (if (eq direction 'backward)
+                           #'polymuse--make-get-prev-wrapper
+                         #'polymuse--make-get-next-wrapper)))
+      (polymuse--collect-units-to-limit limit
+                                        (or pt (point))
+                                        (funcall wrapper-fn move-fn)))))
+
 (defun polymuse--get-context-before-point-paragraphs (limit &optional buffer pt)
   "Paragraph-based context puller, grabbing paragraphs up to LIMIT characters.
 
-  Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
-  (with-current-buffer (or buffer (current-buffer))
-    (polymuse--collect-units-to-limit limit
-                                      (or pt (point))
-                                      (polymuse--make-get-prev-wrapper #'backward-paragraph))))
+Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
+  (polymuse--get-context 'backward 'paragraph limit buffer pt))
 
 (defun polymuse--get-context-after-point-paragraphs (limit &optional buffer pt)
   "Paragraph-based context puller, grabbing paragraphs up to LIMIT characters.
 
-  Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
-  (with-current-buffer (or buffer (current-buffer))
-    (polymuse--collect-units-to-limit limit
-                                      (or pt (point))
-                                      (polymuse--make-get-next-wrapper #'forward-paragraph))))
+Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
+  (polymuse--get-context 'forward 'paragraph limit buffer pt))
 
 (defun polymuse--get-context-before-point-sexps (limit &optional buffer pt)
-  "Paragraph-based context puller, grabbing paragraphs up to LIMIT characters.
+  "Sexp-based context puller, grabbing sexps up to LIMIT characters.
 
-  Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
-  (with-current-buffer (or buffer (current-buffer))
-    (polymuse--collect-units-to-limit limit
-                                      (or pt (point))
-                                      (polymuse--make-get-prev-wrapper #'backward-sexp))))
+Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
+  (polymuse--get-context 'backward 'sexp limit buffer pt))
 
 (defun polymuse--get-context-after-point-sexps (limit &optional buffer pt)
-  "Paragraph-based context puller, grabbing paragraphs up to LIMIT characters.
+  "Sexp-based context puller, grabbing sexps up to LIMIT characters.
 
-  Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
-  (with-current-buffer (or buffer (current-buffer))
-    (polymuse--collect-units-to-limit limit
-                                      (or pt (point))
-                                      (polymuse--make-get-next-wrapper #'forward-sexp))))
+Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
+  (polymuse--get-context 'forward 'sexp limit buffer pt))
 
 (defun polymuse--get-unit-wrapper (go-back go-forward &optional buffer)
   "Pull the range of the current unit.
