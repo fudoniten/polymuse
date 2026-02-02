@@ -1974,13 +1974,49 @@ Returns a string suitable for appending to a review buffer."
 
 ;;;###autoload
 (defun polymuse-kill-reviewer (&optional buffer)
-  "Remove a reviewer from BUFFER (defaults to current buffer)."
+  "Select and kill a reviewer associated with BUFFER."
   (interactive)
   (let* ((buf (or buffer (current-buffer)))
          (review (polymuse--select-review buf))
          (parent (polymuse-review-state-source-buffer review)))
     (polymuse--kill-reviewer parent review)
     (message "Killed polymuse reviewer: %s" (polymuse-review-state-id review))))
+
+(defun polymuse--add-reviewer-impl (backend id instructions interval buffer-size-limit review-context out-buffer)
+  "Internal implementation for adding reviewers.
+
+Creates and initializes a new review state with the given parameters.
+Returns the created review state."
+  (let* ((actual-id (or id (format "polymuse-%s-%d" (buffer-name) (float-time))))
+         (suggestions-buf (or out-buffer
+                              (generate-new-buffer (format "*polymuse:%s*" actual-id))))
+         (local-instructions (or instructions
+                                 (read-string "Review instructions (empty for none): ")))
+         (state (make-polymuse-review-state
+                 :id                 actual-id
+                 :interval           interval
+                 :last-run-time      nil
+                 :last-hash          nil
+                 :buffer-size-limit  buffer-size-limit
+                 :output-buffer      suggestions-buf
+                 :instructions       (unless (string-empty-p local-instructions)
+                                       local-instructions)
+                 :backend            backend
+                 :review-context     review-context
+                 :source-buffer      (current-buffer)
+                 :status             'idle
+                 :request-started-time nil)))
+    (push state polymuse--reviews)
+    (polymuse--enable)
+    (message "Polymuse review %s created with backend %s; suggestions in %s"
+             actual-id (polymuse-backend-id backend) (buffer-name suggestions-buf))
+    (display-buffer suggestions-buf
+                    '((display-buffer-in-side-window)
+                      (side . right)
+                      (slot . 0)
+                      (window-width . 0.33)))
+    (polymuse--run-review (current-buffer) state)
+    state))
 
 ;;;###autoload
 (cl-defun polymuse-add-reviewer
@@ -2005,37 +2041,9 @@ Returns a string suitable for appending to a review buffer."
   REVIEW-CONTEXT is the number of lines of earlier review to include in the
     prompt."
   (interactive)
-  (let* ((id (or id (format "polymuse-%s-%d" (buffer-name) (float-time))))
-         (backend (or backend (polymuse-find-backend (polymuse--interactive-setup-backend))))
-         (suggestions-buf (or out-buffer
-                              (generate-new-buffer (format "*polymuse:%s*" id))))
-         (local-instructions (or instructions
-                                 (read-string "Review instructions (empty for none): ")))
-         (state (make-polymuse-review-state
-                 :id                 id
-                 :interval           interval
-                 :last-run-time      nil
-                 :last-hash          nil
-                 :buffer-size-limit  buffer-size-limit
-                 :output-buffer      suggestions-buf
-                 :instructions       (unless (string-empty-p local-instructions)
-                                       local-instructions)
-                 :backend            backend
-                 :review-context     review-context
-                 :source-buffer      (current-buffer)
-                 :status             'idle
-                 :request-started-time nil)))
-    (push state polymuse--reviews)
-    (polymuse--enable)
-    (message "Polymuse review %s created with backend %s; suggestions in %s"
-             id (polymuse-backend-id backend) (buffer-name suggestions-buf))
-    (display-buffer suggestions-buf
-                    '((display-buffer-in-side-window)
-                      (side . right)
-                      (slot . 0)
-                      (window-width . 0.33)))
-    (polymuse--run-review (current-buffer) state)
-    state))
+  (let ((actual-backend (or backend (polymuse-find-backend (polymuse--interactive-setup-backend)))))
+    (polymuse--add-reviewer-impl actual-backend id instructions interval 
+                                  buffer-size-limit review-context out-buffer)))
 
 ;;;###autoload
 (cl-defun polymuse-add-default-reviewer
@@ -2045,10 +2053,10 @@ Returns a string suitable for appending to a review buffer."
           (buffer-size-limit polymuse-default-buffer-size-limit)
           (review-context polymuse-default-review-context-lines)
           out-buffer)
-  "Create a new Polymuse review buffer for the current buffer.
+  "Create a new Polymuse review buffer for the current buffer using default backend.
 
 ID is the identifier for this review, and will be generated if not provided.
-BACKEND is the backend (LLM) to which requests will be sent for review.
+Uses the default backend configured via `polymuse-define-default-backend'.
 INSTRUCTIONS are instructions specifically for this reviewer.
 INTERVAL is the time in seconds between review requests. A default will be used
   if none is provided.
@@ -2059,37 +2067,9 @@ OUT-BUFFER is the buffer where reviews will be posted. A new buffer will be
 REVIEW-CONTEXT is the number of lines of earlier review to include in the
   prompt."
   (interactive)
-  (let* ((id (or id (format "polymuse-%s-%d" (buffer-name) (float-time))))
-         (backend (polymuse-ensure-backend))
-         (suggestions-buf (or out-buffer
-                              (generate-new-buffer (format "*polymuse:%s*" id))))
-         (local-instructions (or instructions
-                                 (read-string "Review instructions (empty for none): ")))
-         (state (make-polymuse-review-state
-                 :id                 id
-                 :interval           interval
-                 :last-run-time      nil
-                 :last-hash          nil
-                 :buffer-size-limit  buffer-size-limit
-                 :output-buffer      suggestions-buf
-                 :instructions       (unless (string-empty-p local-instructions)
-                                       local-instructions)
-                 :backend            backend
-                 :review-context     review-context
-                 :source-buffer      (current-buffer)
-                 :status             'idle
-                 :request-started-time nil)))
-    (push state polymuse--reviews)
-    (polymuse--enable)
-    (message "Polymuse review %s created with backend %s; suggestions in %s"
-             id (polymuse-backend-id backend) (buffer-name suggestions-buf))
-    (display-buffer suggestions-buf
-                    '((display-buffer-in-side-window)
-                      (side . right)
-                      (slot . 0)
-                      (window-width . 0.33)))
-    (polymuse--run-review (current-buffer) state)
-    state))
+  (let ((backend (polymuse-ensure-backend)))
+    (polymuse--add-reviewer-impl backend id instructions interval
+                                  buffer-size-limit review-context out-buffer)))
 
 ;;;;
 ;; Test Helpers
