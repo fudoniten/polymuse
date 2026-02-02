@@ -627,7 +627,30 @@ This flag is set atomically to prevent race conditions in timer callbacks.")
   "Project-local tools file for the current buffer.
 
 This should be a file name, absolute or relative to the current file,
-that defines any project-specific tools for Polymuse to use.")
+that defines any project-specific tools for Polymuse to use.
+
+SECURITY WARNING: This file will be loaded and executed as Emacs Lisp code.
+Only load tools files from trusted sources. See `polymuse-tools-trust-mode'
+for security options.")
+
+(defcustom polymuse-tools-trust-mode 'ask
+  "How to handle loading of project-specific tools files.
+
+- 'always: Always load tools files without prompting (UNSAFE for untrusted repos)
+- 'ask: Prompt user before loading each new tools file (recommended)
+- 'never: Never load tools files automatically
+
+When set to 'ask, Polymuse will remember your choices per-directory in
+`polymuse-tools-trusted-dirs'."
+  :type '(choice (const :tag "Always load (unsafe)" always)
+                 (const :tag "Ask before loading (recommended)" ask)
+                 (const :tag "Never load automatically" never))
+  :group 'polymuse)
+
+(defvar polymuse-tools-trusted-dirs nil
+  "List of directories where tools files have been approved for loading.
+This is populated automatically when user approves loading via the prompt.
+Stored as absolute directory paths.")
 
 ;;;;
 ;; BACKENDS
@@ -1422,16 +1445,51 @@ FORMAT-STRING and ARGS are passed to `format'."
       (insert (apply #'format format-string args)))))
 
 (defun polymuse--load-tools ()
-  "Load project-specific tools from `polymuse-tools-file', if set."
+  "Load project-specific tools from `polymuse-tools-file', if set.
+
+Respects `polymuse-tools-trust-mode' security setting:
+- 'always: Loads without prompting (unsafe)
+- 'ask: Prompts user first time per directory
+- 'never: Skips loading entirely"
   (when polymuse-tools-file
     (let* ((base-dir (or (and buffer-file-name
                               (file-name-directory buffer-file-name))
                          default-directory))
            (file (if (file-name-absolute-p polymuse-tools-file)
                      polymuse-tools-file
-                   (expand-file-name polymuse-tools-file base-dir))))
+                   (expand-file-name polymuse-tools-file base-dir)))
+           (file-dir (file-name-directory file)))
       (when (file-readable-p file)
-        (load file nil 'nomessage)))))
+        (pcase polymuse-tools-trust-mode
+          ('never
+           (message "Polymuse: Skipping tools file %s (trust mode: never)" file))
+          ('always
+           (condition-case err
+               (progn
+                 (load file nil 'nomessage)
+                 (message "Polymuse: Loaded tools from %s" file))
+             (error
+              (message "Polymuse: Failed to load tools from %s: %S" file err))))
+          ('ask
+           (let ((trusted (member file-dir polymuse-tools-trusted-dirs)))
+             (if trusted
+                 (condition-case err
+                     (progn
+                       (load file nil 'nomessage)
+                       (message "Polymuse: Loaded tools from %s" file))
+                   (error
+                    (message "Polymuse: Failed to load tools from %s: %S" file err)))
+               (when (yes-or-no-p
+                      (format "Polymuse: Load tools file from %s?\n\
+WARNING: This will execute Emacs Lisp code from the file.\n\
+Only proceed if you trust this source. Load file? " file))
+                 (add-to-list 'polymuse-tools-trusted-dirs file-dir)
+                 (condition-case err
+                     (progn
+                       (load file nil 'nomessage)
+                       (message "Polymuse: Loaded tools from %s (directory now trusted)" file))
+                   (error
+                    (message "Polymuse: Failed to load tools from %s: %S" file err)))))))))))))
 
 (defun polymuse--default-profile ()
   "Return the default profile based on current major mode and active modes."
