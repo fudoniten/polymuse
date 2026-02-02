@@ -84,6 +84,7 @@
     (define-key map (kbd "C-c C-r z") #'polymuse-reset-output)
     map))
 
+;;;###autoload
 (define-minor-mode polymuse-mode
   "LLM over-the-shoulder assistant."
   :init-value nil
@@ -353,6 +354,7 @@ different configurations."
              (polymuse-config-name config)
              (polymuse-config-description config))))
 
+;;;###autoload
 (defun polymuse-show-current-config ()
   "Display the current Polymuse configuration settings."
   (interactive)
@@ -366,6 +368,7 @@ different configurations."
              polymuse-context-backward-ratio
              polymuse-include-previous-review)))
 
+;;;###autoload
 (defun polymuse-list-configs ()
   "Display all available configuration presets."
   (interactive)
@@ -659,8 +662,9 @@ Stored as absolute directory paths.")
 (defvar polymuse-backends '()
   "Alist of (ID . BACKEND) pairs of Polymuse backends.")
 
+;;;###autoload
 (defun polymuse-list-backends ()
-  "Return a list of all available Polymuse backends."
+  "Display all available backends."
   (interactive)
   (mapcar #'car polymuse-backends))
 
@@ -758,6 +762,7 @@ a response string. If nil, returns a default test response."
   "Interactively create a default Polymuse backend, returning it."
   (setq polymuse-default-backend-id (polymuse--interactive-setup-backend)))
 
+;;;###autoload
 (defun polymuse-define-default-backend ()
   "Interactively define the default Polymuse backend."
   (interactive)
@@ -773,8 +778,9 @@ a response string. If nil, returns a default test response."
              :key  #'polymuse-backend-id
              :test #'eq))
 
+;;;###autoload
 (defun polymuse-delete-backend ()
-  "Delete backend specified by user from Polymuse."
+  "Interactively delete a Polymuse backend."
   (interactive)
   (let* ((choice-id (completing-read "Remove backend: "
                                      (mapcar #'car polymuse-backends) nil t))
@@ -924,6 +930,7 @@ This function is non-blocking and returns immediately."
           (fill-region start (point))))
       (buffer-string))))
 
+;;;###autoload
 (defun polymuse-toggle-debug ()
   "Toggle Polymuse debug mode."
   (interactive)
@@ -939,8 +946,9 @@ This function is non-blocking and returns immediately."
   (setq polymuse-active-profile profile)
   (message "Switched to profile: %s" profile))
 
+;;;###autoload
 (defun polymuse-show-active-tools ()
-  "Display the currently active tools for this buffer."
+  "Display currently active tools for Polymuse."
   (interactive)
   (let* ((tools (polymuse--collect-tools))
          (profile (or polymuse-active-profile
@@ -1761,15 +1769,17 @@ a plist containing:
                                                 (mapcar #'car choices) nil t)))
                (cdr (assoc review-id choices)))))))))
 
+;;;###autoload
 (defun polymuse-reset-output (&optional buffer)
-  "Reset the review output of BUFFER. Query for review if there's more than one."
+  "Clear the review output buffer for BUFFER (defaults to current buffer)."
   (interactive)
   (let* ((buff (or buffer (current-buffer)))
          (review (polymuse--select-review buff)))
     (polymuse--erase-buffer (polymuse-review-state-output-buffer review))))
 
+;;;###autoload
 (defun polymuse-run-review (&optional buffer)
-  "Select and run a Polymuse review on BUFFER."
+  "Manually trigger a review for BUFFER (defaults to current buffer)."
   (interactive)
   (let* ((buf (or buffer (current-buffer)))
          (review (polymuse--select-review buf))
@@ -1780,8 +1790,9 @@ a plist containing:
   "Open Polymuse REVIEW in a window."
   (pop-to-buffer (polymuse-review-state-output-buffer review)))
 
+;;;###autoload
 (defun polymuse-open-review ()
-  "Open Polymuse review in a window. If there's more than one, open selector."
+  "Open the review window for the current buffer."
   (interactive)
   (let* ((buf (current-buffer))
          (review (polymuse--select-review buf)))
@@ -1948,8 +1959,9 @@ Returns a string suitable for appending to a review buffer."
                      :key  #'polymuse-review-state-id
                      :test #'string=))))
 
+;;;###autoload
 (defun polymuse-kill-all-reviewers (&optional buffer)
-  "Remove all reviewers from BUFFER, and delete their output buffers."
+  "Remove all reviewers from BUFFER (defaults to current buffer)."
   (interactive)
   (with-current-buffer (or buffer (current-buffer))
     (unless (and (boundp 'polymuse--reviews)
@@ -1960,8 +1972,9 @@ Returns a string suitable for appending to a review buffer."
     (setq polymuse--reviews '())
     (message "Killed all polymuse reviewers.")))
 
+;;;###autoload
 (defun polymuse-kill-reviewer (&optional buffer)
-  "Select and kill a reviewer associated with BUFFER."
+  "Remove a reviewer from BUFFER (defaults to current buffer)."
   (interactive)
   (let* ((buf (or buffer (current-buffer)))
          (review (polymuse--select-review buf))
@@ -1969,6 +1982,7 @@ Returns a string suitable for appending to a review buffer."
     (polymuse--kill-reviewer parent review)
     (message "Killed polymuse reviewer: %s" (polymuse-review-state-id review))))
 
+;;;###autoload
 (cl-defun polymuse-add-reviewer
     (&key id
           backend
@@ -2023,6 +2037,7 @@ Returns a string suitable for appending to a review buffer."
     (polymuse--run-review (current-buffer) state)
     state))
 
+;;;###autoload
 (cl-defun polymuse-add-default-reviewer
     (&key id
           instructions
