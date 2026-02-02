@@ -1267,14 +1267,18 @@ active minor modes.")
             (setf (polymuse-review-state-status review) 'running)
             (setf (polymuse-review-state-request-started-time review) (float-time))
             (setf (polymuse-review-state-last-run-time review) (float-time))
-            (setf (polymuse-review-state-last-hash review) new-hash)
+            ;; DON'T update hash yet - wait for successful response
             (polymuse-request-review backend
                                      prompt
                                      :system   polymuse-system-prompt
                                      :callback (lambda (response info)
-                                                 ;; Always reset status to idle when request completes
+                                                 ;; Always reset status and update hash when request completes
                                                  (unwind-protect
-                                                     (polymuse--handle-llm-response review response)
+                                                     (progn
+                                                       (polymuse--handle-llm-response review response)
+                                                       ;; Only update hash on successful response
+                                                       (when (and response (stringp response) (> (length response) 0))
+                                                         (setf (polymuse-review-state-last-hash review) new-hash)))
                                                    (setf (polymuse-review-state-status review) 'idle)
                                                    (setf (polymuse-review-state-request-started-time review) nil))))))))))
 
