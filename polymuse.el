@@ -611,6 +611,10 @@ returns the global `polymuse--default-global-state'."
 (defvar-local polymuse--last-activity-time nil
   "Timestamp of the last buffer activity (for tracking user presence).")
 
+(defvar-local polymuse--mode-active nil
+  "Non-nil when polymuse-mode is actively enabled in this buffer.
+This flag is set atomically to prevent race conditions in timer callbacks.")
+
 (defcustom polymuse-debug nil
   "Enable Polymuse debug mode."
   :type 'boolean)
@@ -1313,7 +1317,7 @@ review, or if it was modified within `polymuse-buffer-activity-timeout' seconds.
   (dolist (buf (buffer-list))
     (when (buffer-live-p buf)
       (with-current-buffer buf
-        (when (bound-and-true-p polymuse-mode)
+        (when (and (bound-and-true-p polymuse-mode) polymuse--mode-active)
           (dolist (review polymuse--reviews)
             (when (polymuse--review-stale-p review)
               (when polymuse-debug
@@ -1322,15 +1326,14 @@ review, or if it was modified within `polymuse-buffer-activity-timeout' seconds.
               (setf (polymuse-review-state-request-started-time review) nil))))))))
 
 (defun polymuse--global-idle-tick ()
-  "Check all muse-enabled buffers and run due reviews."
-  (when polymuse-debug  (message "Polymuse: Tick!"))
-  ;; First, reset any stale reviews
+  "Polymuse global idle timer tick handler.
+Iterates through all buffers and runs reviews for those where polymuse-mode
+is enabled and conditions are met."
   (polymuse--reset-stale-reviews)
-  ;; Then check for due reviews
   (dolist (buf (buffer-list))
     (when (buffer-live-p buf)
       (with-current-buffer buf
-        (when polymuse-mode
+        (when (and polymuse-mode polymuse--mode-active)
           (dolist (review polymuse--reviews)
             (let* ((interval (polymuse-review-state-interval review))
                    (last-run (or (polymuse-review-state-last-run-time review) 0))
@@ -1796,6 +1799,8 @@ a plist containing:
 
 (defun polymuse--enable ()
   "Enable the Polymuse LLM live review mode."
+  ;; Set flag atomically before starting timer
+  (setq polymuse--mode-active t)
   (let* ((state (polymuse--get-global-state))
          (scheduler (or (polymuse-global-state-scheduler state)
                         (polymuse--create-timer-scheduler))))
@@ -1820,11 +1825,15 @@ a plist containing:
 
 (defun polymuse--disable ()
   "Disable the Polymuse LLM live review mode."
+  ;; Clear flag atomically before checking other buffers
+  (setq polymuse--mode-active nil)
   (let* ((state (polymuse--get-global-state))
          (scheduler (or (polymuse-global-state-scheduler state)
                         (polymuse--create-timer-scheduler))))
     (when (and (polymuse-global-state-timer state)
-               (not (cl-some (lambda (b) (with-current-buffer b polymuse-mode))
+               (not (cl-some (lambda (b)
+                               (and (buffer-live-p b)
+                                    (buffer-local-value 'polymuse--mode-active b)))
                              (buffer-list))))
       (funcall (polymuse-scheduler-stop-fn scheduler)
                (polymuse-global-state-timer state))
