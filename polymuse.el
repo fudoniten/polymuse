@@ -1294,9 +1294,14 @@ Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
                     (polymuse-review-state-id review) err))))
 
 (defun polymuse--run-review (src-buffer review)
-  "Submit review request for SRC-BUFFER to LLM per config in REVIEW."
+  "Submit review request for SRC-BUFFER to LLM per config in REVIEW.
+
+Validates buffer is live before submitting request."
   (let ((backend (polymuse-review-state-backend review)))
     (unless backend (error "Polymuse: no backend configured, skipping review"))
+    (unless (buffer-live-p src-buffer)
+      (error "Polymuse: source buffer no longer live for review %s" 
+             (polymuse-review-state-id review)))
     (message "Requesting Polymuse review: %s" (polymuse-review-state-id review))
     (with-current-buffer src-buffer
       (let ((old-hash (polymuse-review-state-last-hash review))
@@ -1939,22 +1944,31 @@ Returns a string suitable for appending to a review buffer."
           response))
 
 (defun polymuse--display-review (review response)
-  "Display the review in RESPONSE according to the state in REVIEW."
+  "Display the review in RESPONSE according to the state in REVIEW.
+
+Handles errors gracefully to prevent reviews from getting stuck in 'running' state."
   (let ((outbuf (polymuse-review-state-output-buffer review)))
-    (if (not (buffer-live-p outbuf))
-        (error "Output buffer %s for review %s is not live"
-               outbuf (polymuse-review-state-id review))
-      (let ((formatted-response (polymuse--format-review-for-display response)))
-        (with-current-buffer outbuf
-          (let ((inhibit-read-only t))
-            (polymuse-suggestions-mode)
-            (polymuse--truncate-buffer-to-length
-             (current-buffer)
-             (polymuse-review-state-buffer-size-limit review)))
-          (typewrite-enqueue-job formatted-response outbuf
-                                 :inhibit-read-only t
-                                 :follow t
-                                 :cps 45))))))
+    (condition-case err
+        (progn
+          (unless (buffer-live-p outbuf)
+            (error "Output buffer %s for review %s is not live"
+                   outbuf (polymuse-review-state-id review)))
+          (let ((formatted-response (polymuse--format-review-for-display response)))
+            (with-current-buffer outbuf
+              (let ((inhibit-read-only t))
+                (polymuse-suggestions-mode)
+                (polymuse--truncate-buffer-to-length
+                 (current-buffer)
+                 (polymuse-review-state-buffer-size-limit review)))
+              (typewrite-enqueue-job formatted-response outbuf
+                                     :inhibit-read-only t
+                                     :follow t
+                                     :cps 45))))
+      (error
+       (message "Polymuse: Failed to display review %s: %S"
+                (polymuse-review-state-id review) err)
+       ;; Ensure review status is reset even on error
+       (setf (polymuse-review-state-status review) 'idle)))))
 
 (defun polymuse--kill-reviewer (buffer review)
   "Remove a REVIEW from BUFFER, and delete its output buffer."
@@ -1996,12 +2010,26 @@ Returns a string suitable for appending to a review buffer."
   "Internal implementation for adding reviewers.
 
 Creates and initializes a new review state with the given parameters.
-Returns the created review state."
+Returns the created review state.
+
+Validates inputs to prevent token limit issues and configuration errors."
+  ;; Input validation
+  (when (and instructions (> (length instructions) 5000))
+    (user-error "Instructions too long (max 5000 characters, got %d)" 
+                (length instructions)))
+  (when (and interval (<= interval 0))
+    (user-error "Interval must be positive (got %s)" interval))
+  (when (and buffer-size-limit (<= buffer-size-limit 0))
+    (user-error "Buffer size limit must be positive (got %s)" buffer-size-limit))
+  
   (let* ((actual-id (or id (format "polymuse-%s-%d" (buffer-name) (float-time))))
          (suggestions-buf (or out-buffer
                               (generate-new-buffer (format "*polymuse:%s*" actual-id))))
          (local-instructions (or instructions
                                  (read-string "Review instructions (empty for none): ")))
+         ;; Validate prompted instructions too
+         (_ (when (> (length local-instructions) 5000)
+              (user-error "Instructions too long (max 5000 characters)")))
          (state (make-polymuse-review-state
                  :id                 actual-id
                  :interval           interval
