@@ -36,22 +36,6 @@
         "type": "github"
       }
     },
-    "gptel": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1770008172,
-        "narHash": "sha256-b93BEeRL9orVenycFa7oD4jMQNKiXE9br74rmXiEtJ4=",
-        "owner": "karthink",
-        "repo": "gptel",
-        "rev": "fd876e6c82f4b76563aafb36234180c8a75dd22f",
-        "type": "github"
-      },
-      "original": {
-        "owner": "karthink",
-        "repo": "gptel",
-        "type": "github"
-      }
-    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1769789167,
@@ -71,7 +55,6 @@
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "gptel": "gptel",
         "nixpkgs": "nixpkgs",
         "typewrite": "typewrite"
       }

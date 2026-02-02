@@ -1507,12 +1507,13 @@ Respects `polymuse-tools-trust-mode' security setting:
 WARNING: This will execute Emacs Lisp code from the file.\n\
 Only proceed if you trust this source. Load file? " file))
                  (add-to-list 'polymuse-tools-trusted-dirs file-dir)
-                 (condition-case err
-                     (progn
-                       (load file nil 'nomessage)
-                       (message "Polymuse: Loaded tools from %s (directory now trusted)" file))
-                   (error
-                    (message "Polymuse: Failed to load tools from %s: %S" file err)))))))))))))
+                  (condition-case err
+                      (progn
+                        (load file nil 'nomessage)
+                        (message "Polymuse: Loaded tools from %s (directory now trusted)" file))
+                    (error
+                     (message "Polymuse: Failed to load tools from %s: %S" file err))))))))))))
+
 
 (defun polymuse--default-profile ()
   "Return the default profile based on current major mode and active modes."
