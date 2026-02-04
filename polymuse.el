@@ -788,46 +788,41 @@ a response string. If nil, returns a default test response."
     (unless backend (user-error "No review found for id: %s" choice-id))
     (polymuse--delete-backend choice-id)))
 
-(defun polymuse-ollama-list-models (host protocol callback)
-  "Asynchronously fetch available Ollama model names from HOST over PROTOCOL.
+(defun polymuse-ollama-list-models (host protocol)
+  "Synchronously fetch available Ollama model names from HOST over PROTOCOL.
 
 HOST should be like \"localhost:11434\".
 PROTOCOL should be \"http\" or \"https\".
-CALLBACK is called with (models) on success or (nil error-message) on failure.
 
-This function is non-blocking and returns immediately."
+Returns a list of model names on success, or signals an error on failure."
   (let ((url-request-method "GET")
         (url (format "%s://%s/api/tags" protocol host)))
-    (url-retrieve
-     url
-     (lambda (status)
-       (let ((error-status (plist-get status :error)))
-         (if error-status
-             (progn
-               (when (current-buffer) (kill-buffer))
-               (funcall callback nil (format "Failed to fetch models: %S" error-status)))
-           (condition-case err
-               (progn
-                 (goto-char (point-min))
-                 (if (re-search-forward "\n\n" nil t)
-                     (let* ((json (json-parse-buffer
-                                   :object-type  'alist
-                                   :array-type   'list
-                                   :null-object  nil
-                                   :false-object nil))
-                            (models (alist-get 'models json))
-                            (model-names (delq nil
-                                               (mapcar (lambda (m) (alist-get 'name m))
-                                                       models))))
-                       (when (current-buffer) (kill-buffer))
-                       (funcall callback model-names nil))
-                   (when (current-buffer) (kill-buffer))
-                   (funcall callback nil "Invalid response format")))
-             (error
-              (when (current-buffer) (kill-buffer))
-              (funcall callback nil (format "Parse error: %S" err)))))))
-     nil t t))
-  nil)
+    (with-current-buffer (url-retrieve-synchronously url t t 5)
+      (let ((error-status (plist-get url-http-response-status :error)))
+        (if error-status
+            (progn
+              (kill-buffer)
+              (user-error "Failed to fetch models: %S" error-status))
+          (condition-case err
+              (progn
+                (goto-char (point-min))
+                (if (re-search-forward "\n\n" nil t)
+                    (let* ((json (json-parse-buffer
+                                  :object-type  'alist
+                                  :array-type   'list
+                                  :null-object  nil
+                                  :false-object nil))
+                           (models (alist-get 'models json))
+                           (model-names (delq nil
+                                              (mapcar (lambda (m) (alist-get 'name m))
+                                                      models))))
+                      (kill-buffer)
+                      model-names)
+                  (kill-buffer)
+                  (user-error "Invalid response format")))
+            (error
+             (kill-buffer)
+             (user-error "Parse error: %S" err))))))))
 
 (defun polymuse--format-json (json-string)
   "Given a JSON string JSON-STRING, return a pretty-printed version."
@@ -850,39 +845,27 @@ This function is non-blocking and returns immediately."
   (let* ((host   (read-string "Ollama host (host:port): " "localhost:11434"))
          (protocol (completing-read "Ollama protocol: "
                                     '("http" "https")
-                                    nil t nil nil "https")))
-    (message "Fetching models from %s://%s..." protocol host)
-    (polymuse-ollama-list-models
-     host protocol
-     (lambda (models error-msg)
-       (if error-msg
-           (progn
-             (message "Could not fetch models: %s" error-msg)
-             (let* ((model (read-string "Enter model name manually: "))
-                    (temperature (read-number "Model temperature (0.0 - 2.0): " 0.2))
-                    (id (intern (format "ollama-%s" model)))
-                    (spec (make-polymuse-ollama-backend-spec :id          id
-                                                             :host        host
-                                                             :protocol    protocol
-                                                             :model       model
-                                                             :temperature temperature)))
-               (polymuse--initialize-backend spec)
-               (message "Ollama backend '%s' configured" id)
-               id))
-         (let* ((model (completing-read "Ollama model: " models nil t))
-                (temperature (read-number "Model temperature (0.0 - 2.0): " 0.2))
-                (id (intern (format "ollama-%s" model)))
-                (spec (make-polymuse-ollama-backend-spec :id          id
-                                                         :host        host
-                                                         :protocol    protocol
-                                                         :model       model
-                                                         :temperature temperature)))
-           (polymuse--initialize-backend spec)
-           (message "Ollama backend '%s' configured with model %s" id model)
-           id)))))
-  ;; Return immediately - backend will be configured asynchronously
-  (message "Configuring Ollama backend asynchronously...")
-  nil)
+                                    nil t nil nil "https"))
+         (models (condition-case err
+                     (progn
+                       (message "Fetching models from %s://%s..." protocol host)
+                       (polymuse-ollama-list-models host protocol))
+                   (error
+                    (message "Could not fetch models: %s" (error-message-string err))
+                    nil)))
+         (model (if models
+                    (completing-read "Ollama model: " models nil t)
+                  (read-string "Enter model name manually: ")))
+         (temperature (read-number "Model temperature (0.0 - 2.0): " 0.2))
+         (id (intern (format "ollama-%s" model)))
+         (spec (make-polymuse-ollama-backend-spec :id          id
+                                                  :host        host
+                                                  :protocol    protocol
+                                                  :model       model
+                                                  :temperature temperature)))
+    (polymuse--initialize-backend spec)
+    (message "Ollama backend '%s' configured with model %s" id model)
+    id))
 
 (cl-defstruct polymuse-review-state
   id
