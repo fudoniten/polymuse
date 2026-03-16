@@ -797,7 +797,10 @@ PROTOCOL should be \"http\" or \"https\".
 Returns a list of model names on success, or signals an error on failure."
   (let ((url-request-method "GET")
         (url (format "%s://%s/api/tags" protocol host)))
-    (with-current-buffer (url-retrieve-synchronously url t t 5)
+    (let ((buf (url-retrieve-synchronously url t t 5)))
+      (unless buf
+        (user-error "Could not connect to Ollama at %s" url))
+      (with-current-buffer buf
       (let ((error-status (plist-get url-http-response-status :error)))
         (if error-status
             (progn
@@ -822,7 +825,7 @@ Returns a list of model names on success, or signals an error on failure."
                   (user-error "Invalid response format")))
             (error
              (kill-buffer)
-             (user-error "Parse error: %S" err))))))))
+             (user-error "Parse error: %S" err)))))))))
 
 (defun polymuse--format-json (json-string)
   "Given a JSON string JSON-STRING, return a pretty-printed version."
