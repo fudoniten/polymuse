@@ -712,13 +712,17 @@ a response string. If nil, returns a default test response."
 (cl-defmethod polymuse--initialize-backend ((spec polymuse-ollama-backend-spec))
   "Instantiate ollama gptel backend from SPEC."
   (let* ((id       (polymuse-backend-spec-id spec))
-         (existing (alist-get id polymuse-backends)))
-    (if existing
+         (existing (alist-get id polymuse-backends))
+         (host     (polymuse-ollama-backend-spec-host spec))
+         (protocol (polymuse-ollama-backend-spec-protocol spec)))
+    (if (and existing
+             (equal host (gptel-backend-host
+                          (polymuse-gptel-backend-executor existing)))
+             (equal protocol (gptel-backend-protocol
+                              (polymuse-gptel-backend-executor existing))))
         existing
       (let* ((model    (polymuse-backend-spec-model spec))
              (temperature (polymuse-backend-spec-temperature spec))
-             (host     (polymuse-ollama-backend-spec-host spec))
-             (protocol (polymuse-ollama-backend-spec-protocol spec))
              (backend  (make-polymuse-gptel-backend
                         :id          id
                         :model       model
@@ -773,10 +777,8 @@ a response string. If nil, returns a default test response."
 
 (defun polymuse--delete-backend (backend-id)
   "Remove BACKEND-ID from Polymuse backends."
-  (cl-remove backend-id
-             polymuse-backends
-             :key  #'polymuse-backend-id
-             :test #'eq))
+  (setq polymuse-backends
+        (assq-delete-all backend-id polymuse-backends)))
 
 ;;;###autoload
 (defun polymuse-delete-backend ()
