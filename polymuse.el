@@ -237,7 +237,17 @@ previous review history."
      . ,(make-polymuse-config
          :name 'mistral-7b
          :description "Mistral 7B v0.3 - Excellent for code, concise responses"
-         :max-prompt-characters 6800
+         :max-prompt-characters 14000
+         :response-reserve-ratio 0.25
+         :context-backward-ratio 0.62
+         :include-previous-review nil
+         :mode-prompts nil))
+
+    (mistral-11b
+     . ,(make-polymuse-config
+         :name 'mistral-11b
+         :description "Mistral 11B v0.3 - Excellent for code, concise responses"
+         :max-prompt-characters 14000
          :response-reserve-ratio 0.25
          :context-backward-ratio 0.62
          :include-previous-review nil
@@ -328,24 +338,27 @@ If BUFFER is nil, applies to the current buffer."
     (setq-local polymuse-current-config
                 (polymuse-config-name config))))
 
+(defun polymuse-toggle-include-previous-review ()
+  "Toggle `include-previous-review' setting."
+  (interactive)
+  (setq-local polymuse-include-previous-review (not polymuse-include-previous-review)))
+
 (defun polymuse-use-config (config-name)
-  "Switch to configuration preset CONFIG-NAME.
+  "Switch to configuration preset CONFIG-NAME, found in `polymuse-config-presets'.
 
-CONFIG-NAME should be a symbol like 'llama-3.1-8b or 'mistral-7b.
-See `polymuse-config-presets' for available presets.
-
-This sets buffer-local variables, so different buffers can use
-different configurations."
+This will set local variables according to the specified config."
   (interactive
-   (list (intern (completing-read
-                  "Polymuse config: "
-                  (mapcar (lambda (entry)
-                            (let* ((config (cdr entry))
-                                   (name (symbol-name (polymuse-config-name config)))
-                                   (desc (polymuse-config-description config)))
-                              (cons (format "%-20s - %s" name desc) (car entry))))
-                          polymuse-config-presets)
-                  nil t))))
+   (let* ((candidates
+           (mapcar (lambda (entry)
+                     (let* ((config (cdr entry))
+                            (name (symbol-name (polymuse-config-name config)))
+                            (desc (polymuse-config-description config))
+                            (key  (car entry)))
+                       (cons (format "%-20s - %s" name desc) key)))
+                   polymuse-config-presets))
+          (choice (completing-read "Polymuse config: " candidates nil t))
+          (key    (cdr (assoc choice candidates))))
+     (list key)))
   (let ((config (polymuse-get-config config-name)))
     (unless config
       (user-error "Unknown configuration preset: %s" config-name))
@@ -646,8 +659,8 @@ for security options.")
 When set to 'ask, Polymuse will remember your choices per-directory in
 `polymuse-tools-trusted-dirs'."
   :type '(choice (const :tag "Always load (unsafe)" always)
-                 (const :tag "Ask before loading (recommended)" ask)
-                 (const :tag "Never load automatically" never))
+          (const :tag "Ask before loading (recommended)" ask)
+          (const :tag "Never load automatically" never))
   :group 'polymuse)
 
 (defvar polymuse-tools-trusted-dirs nil
@@ -1494,12 +1507,12 @@ Respects `polymuse-tools-trust-mode' security setting:
 WARNING: This will execute Emacs Lisp code from the file.\n\
 Only proceed if you trust this source. Load file? " file))
                  (add-to-list 'polymuse-tools-trusted-dirs file-dir)
-                  (condition-case err
-                      (progn
-                        (load file nil 'nomessage)
-                        (message "Polymuse: Loaded tools from %s (directory now trusted)" file))
-                    (error
-                     (message "Polymuse: Failed to load tools from %s: %S" file err))))))))))))
+                 (condition-case err
+                     (progn
+                       (load file nil 'nomessage)
+                       (message "Polymuse: Loaded tools from %s (directory now trusted)" file))
+                   (error
+                    (message "Polymuse: Failed to load tools from %s: %S" file err))))))))))))
 
 
 (defun polymuse--default-profile ()
@@ -2069,7 +2082,7 @@ Validates inputs to prevent token limit issues and configuration errors."
   (interactive)
   (let ((actual-backend (or backend (polymuse-find-backend (polymuse--interactive-setup-backend)))))
     (polymuse--add-reviewer-impl actual-backend id instructions interval 
-                                  buffer-size-limit review-context out-buffer)))
+                                 buffer-size-limit review-context out-buffer)))
 
 ;;;###autoload
 (cl-defun polymuse-add-default-reviewer
@@ -2095,7 +2108,7 @@ REVIEW-CONTEXT is the number of lines of earlier review to include in the
   (interactive)
   (let ((backend (polymuse-ensure-backend)))
     (polymuse--add-reviewer-impl backend id instructions interval
-                                  buffer-size-limit review-context out-buffer)))
+                                 buffer-size-limit review-context out-buffer)))
 
 ;;;;
 ;; Test Helpers
