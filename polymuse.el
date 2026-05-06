@@ -261,8 +261,7 @@ previous review history."
          :response-reserve-ratio 0.27
          :context-backward-ratio 0.68
          :include-previous-review nil
-         :mode-prompts '((prog-mode . "Review code in `focus-region`. Priority: (1) bugs/logic errors; (2) security issues (injection, validation); (3) performance problems; (4) better standard library usage. Suggest specific functions/patterns.")
-                         (text-mode . "Read the prose in `focus-region` and share your thoughts. What's working? What could be more engaging? Think about characters, pacing, emotional impact, voice. Share ideas and reactions that come to mind, not just corrections."))))
+         :mode-prompts nil))
 
     (deepseek-coder-6.7b
      . ,(make-polymuse-config
@@ -816,31 +815,31 @@ Returns a list of model names on success, or signals an error on failure."
       (unless buf
         (user-error "Could not connect to Ollama at %s" url))
       (with-current-buffer buf
-      (let ((error-status (plist-get url-http-response-status :error)))
-        (if error-status
-            (progn
-              (kill-buffer)
-              (user-error "Failed to fetch models: %S" error-status))
-          (condition-case err
+        (let ((error-status (plist-get url-http-response-status :error)))
+          (if error-status
               (progn
-                (goto-char (point-min))
-                (if (re-search-forward "\n\n" nil t)
-                    (let* ((json (json-parse-buffer
-                                  :object-type  'alist
-                                  :array-type   'list
-                                  :null-object  nil
-                                  :false-object nil))
-                           (models (alist-get 'models json))
-                           (model-names (delq nil
-                                              (mapcar (lambda (m) (alist-get 'name m))
-                                                      models))))
-                      (kill-buffer)
-                      model-names)
-                  (kill-buffer)
-                  (user-error "Invalid response format")))
-            (error
-             (kill-buffer)
-             (user-error "Parse error: %S" err)))))))))
+                (kill-buffer)
+                (user-error "Failed to fetch models: %S" error-status))
+            (condition-case err
+                (progn
+                  (goto-char (point-min))
+                  (if (re-search-forward "\n\n" nil t)
+                      (let* ((json (json-parse-buffer
+                                    :object-type  'alist
+                                    :array-type   'list
+                                    :null-object  nil
+                                    :false-object nil))
+                             (models (alist-get 'models json))
+                             (model-names (delq nil
+                                                (mapcar (lambda (m) (alist-get 'name m))
+                                                        models))))
+                        (kill-buffer)
+                        model-names)
+                    (kill-buffer)
+                    (user-error "Invalid response format")))
+              (error
+               (kill-buffer)
+               (user-error "Parse error: %S" err)))))))))
 
 (defun polymuse--format-json (json-string)
   "Given a JSON string JSON-STRING, return a pretty-printed version."
@@ -1069,8 +1068,6 @@ mock response, making it suitable for testing without network calls."
   (string-join
    '("You are a creative assistant providing real-time feedback as the user writes."
      "Offer varied, interesting insights and suggestions. Don't be afraid to explore different angles or possibilities."
-     "For prose, focus on what makes the content engaging - characters, plot, voice, emotional impact, and reader experience."
-     "For code, balance between catching important issues and suggesting improvements that make things more elegant or clear."
      "Share observations, ideas, and reactions. If something sparks a thought or possibility, share it."
      "Keep responses conversational and under 200 words unless exploring something particularly interesting.")
    " ")
@@ -1079,7 +1076,7 @@ mock response, making it suitable for testing without network calls."
 
 (defcustom polymuse-mode-prompts
   '((prog-mode . "Review the code in `focus-region`. Check for: (1) bugs, edge cases, or incorrect logic; (2) potential errors or exceptions not handled; (3) unclear naming or confusing structure; (4) opportunities to simplify or use better patterns/libraries. Ignore trivial style issues.")
-    (text-mode . "Read the prose in `focus-region` and share your thoughts. What's working? What could be more engaging? Consider the characters - are they compelling and consistent? Does the pacing feel right? Are there moments that could have more emotional impact? What about the voice and style - does it draw you in? Share ideas, reactions, or possibilities that come to mind. Skip grammar and mechanics unless something truly disrupts the reading experience."))
+    (text-mode . "Read the prose in `focus-region` and share your thoughts, according to the `instructions`. Share ideas, reactions, or possibilities that come to mind. Skip grammar and mechanics unless something truly disrupts the reading experience."))
   "Mode-specific prompt for the polymuse over-the-shoulder assistant."
   :type '(alist :key-type symbol :value-type string))
 
