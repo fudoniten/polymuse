@@ -2,8 +2,8 @@
 
 ## Progress
 
-- [ ] Fix 1 — Serialize prompt to string (XML default, JSON option)
-- [ ] Fix 2 — Split system prompt: prose persona vs. terse code reviewer
+- [x] Fix 1 — Serialize prompt to string (XML default, JSON option)
+- [x] Fix 2 — Split system prompt: prose persona vs. terse code reviewer
 - [ ] Fix 3 — Insert `<CURSOR/>` marker inside focus region
 - [ ] Fix 4 — Per-mode chars-per-token budget
 - [ ] Fix 5 — Gate forward context for code mode

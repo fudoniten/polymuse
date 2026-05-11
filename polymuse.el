@@ -848,6 +848,89 @@ Returns a list of model names on success, or signals an error on failure."
     (json-pretty-print-buffer)
     (buffer-string)))
 
+(defcustom polymuse-prompt-format 'xml
+  "Wire format used when sending prompts to the LLM.
+
+`xml'  — section-tagged layout; works well with Claude and GPT-4-class
+         models and is easy to read in the debug buffer.
+`json' — JSON-serialized alist; useful for models or tooling that expect
+         structured input.
+
+Individual backends can override this via their `prompt-format' slot."
+  :type '(choice (const :tag "XML tags" xml)
+                 (const :tag "JSON" json)))
+
+(defun polymuse--serialize-prompt-xml (prompt-alist)
+  "Serialize PROMPT-ALIST to a tagged XML-ish string for the LLM."
+  (let* ((review-req   (alist-get 'review-request  prompt-alist))
+         (environment  (alist-get 'environment      prompt-alist))
+         (context      (alist-get 'context          prompt-alist))
+         (current      (alist-get 'current          prompt-alist))
+         (task         (alist-get 'task             prompt-alist))
+         (mode-prompt  (alist-get 'mode-prompt      review-req))
+         (buf-prompt   (alist-get 'buffer-prompt    review-req))
+         (tools        (alist-get 'tools            review-req))
+         (major-mode-s (alist-get 'major_mode       environment))
+         (backward     (alist-get 'backward-context context))
+         (forward      (alist-get 'forward-context  context))
+         (prev-review  (alist-get 'previous-review  context))
+         (focus        (alist-get 'focus-region     current))
+         (task-focus   (alist-get 'focus            task))
+         (task-prev    (alist-get 'previous         task))
+         (task-instr   (alist-get 'instructions     task))
+         (parts        '()))
+    ;; <instructions> block
+    (let ((instr-content
+           (string-trim
+            (string-join
+             (delq nil (list mode-prompt
+                             (when (and buf-prompt (not (string-empty-p buf-prompt)))
+                               buf-prompt)))
+             "\n\n"))))
+      (when (not (string-empty-p instr-content))
+        (push (format "<instructions>\n%s\n</instructions>" instr-content) parts)))
+    ;; <tools> block
+    (when tools
+      (let ((tool-instr (alist-get 'instructions tools))
+            (tool-list  (alist-get 'tool-list    tools)))
+        (push (format "<tools>\n%s\n\n%s\n</tools>"
+                      (or tool-instr "")
+                      (if tool-list
+                          (json-serialize tool-list)
+                        ""))
+              parts)))
+    ;; <context> block
+    (push (format "<context mode=\"%s\">\n<before>\n%s\n</before>\n<focus>\n%s\n</focus>\n<after>\n%s\n</after>\n</context>"
+                  (or major-mode-s "")
+                  (or backward "")
+                  (or focus "")
+                  (or forward ""))
+          parts)
+    ;; <previous_review> block
+    (when (and prev-review (not (string-empty-p prev-review)))
+      (push (format "<previous_review>\n%s\n</previous_review>" prev-review) parts))
+    ;; <task> block
+    (let ((task-content
+           (string-trim
+            (string-join
+             (delq nil (list task-focus task-prev task-instr))
+             "\n"))))
+      (when (not (string-empty-p task-content))
+        (push (format "<task>\n%s\n</task>" task-content) parts)))
+    (string-join (nreverse parts) "\n\n")))
+
+(defun polymuse--serialize-prompt-json (prompt-alist)
+  "Serialize PROMPT-ALIST to a pretty-printed JSON string for the LLM."
+  (polymuse--format-json (json-serialize prompt-alist)))
+
+(defun polymuse--serialize-prompt (prompt-alist &optional format)
+  "Serialize PROMPT-ALIST to a string using FORMAT (`xml' or `json').
+
+FORMAT defaults to `polymuse-prompt-format'."
+  (pcase (or format polymuse-prompt-format)
+    ('json (polymuse--serialize-prompt-json prompt-alist))
+    (_     (polymuse--serialize-prompt-xml  prompt-alist))))
+
 (defun polymuse--setup-openai-backend ()
   "Interactively create an OpenAI polymuse backend using gptel."
   (let* ((model (read-string "OpenAI model (e.g. gpt-4o-mini): " "gpt-4o-mini"))
@@ -988,12 +1071,14 @@ Returns a list of model names on success, or signals an error on failure."
     (let* ((gptel-backend     executor)
            (gptel-model       model)
            (gptel-temperature temperature)
-           (result (gptel-request request
+           (wire-request (if (stringp request)
+                             request
+                           (polymuse--serialize-prompt request)))
+           (result (gptel-request wire-request
                      :system   system
                      :callback handler)))
       (when polymuse-debug
-        (polymuse--debug-log "\n\nREQUEST:\n\n%s\n\nEND REQUEST\n\n"
-                             (polymuse--format-json (json-serialize request))))
+        (polymuse--debug-log "\n\nREQUEST:\n\n%s\n\nEND REQUEST\n\n" wire-request))
       result)))
 
 (cl-defmethod polymuse-request-review ((backend polymuse-mock-backend) request &rest args)
@@ -1008,7 +1093,9 @@ mock response, making it suitable for testing without network calls."
                      "Mock review response for testing.")))
     (when polymuse-debug
       (polymuse--debug-log "\n\nMOCK REQUEST:\n\n%s\n\nEND REQUEST\n\n"
-                           (polymuse--format-json (json-serialize request)))
+                           (if (stringp request)
+                               request
+                             (polymuse--serialize-prompt request)))
       (polymuse--debug-log "\n\nMOCK RESPONSE:\n\n%s\n\nEND RESPONSE\n\n" response))
     (when callback
       (funcall callback response nil))
@@ -1071,8 +1158,28 @@ mock response, making it suitable for testing without network calls."
      "Share observations, ideas, and reactions. If something sparks a thought or possibility, share it."
      "Keep responses conversational and under 200 words unless exploring something particularly interesting.")
    " ")
-  "Base system prompt for polymuse."
+  "Base system prompt for polymuse. Used for prose and as the default fallback."
   :type 'string)
+
+(defcustom polymuse-code-system-prompt
+  (string-join
+   '("You are a careful code reviewer providing real-time feedback."
+     "Flag only genuine problems: bugs, unhandled edge cases, unclear naming, or needlessly complex structure."
+     "Be terse and concrete. Cite the specific line or expression you are flagging."
+     "If there is nothing worth flagging, say so in one line."
+     "Do not offer praise, speculation, or style commentary unless it obscures correctness.")
+   " ")
+  "System prompt used when reviewing code (buffers derived from `prog-mode').
+
+This is intentionally terser and more concrete than `polymuse-system-prompt',
+which is tuned for prose."
+  :type 'string)
+
+(defun polymuse--active-system-prompt ()
+  "Return the system prompt appropriate for the current buffer's major mode."
+  (if (derived-mode-p 'prog-mode)
+      polymuse-code-system-prompt
+    polymuse-system-prompt))
 
 (defcustom polymuse-mode-prompts
   '((prog-mode . "Review the code in `focus-region`. Check for: (1) bugs, edge cases, or incorrect logic; (2) potential errors or exceptions not handled; (3) unclear naming or confusing structure; (4) opportunities to simplify or use better patterns/libraries. Ignore trivial style issues.")
@@ -1313,7 +1420,7 @@ Validates buffer is live before submitting request."
             ;; DON'T update hash yet - wait for successful response
             (polymuse-request-review backend
                                      prompt
-                                     :system   polymuse-system-prompt
+                                     :system   (polymuse--active-system-prompt)
                                      :callback (lambda (response info)
                                                  ;; Always reset status and update hash when request completes
                                                  (unwind-protect
