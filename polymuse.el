@@ -9,7 +9,7 @@
 ;; Version: 0.0.1
 ;; Keywords: docs outlines processes terminals text tools
 ;; Homepage: https://github.com/niten/polymuse
-;; Package-Requires: ((emacs "29.3") (gptel "0.9.0") (markdown-mode "2.5") (typewrite "0.1.0"))
+;; Package-Requires: ((emacs "29.3") (gptel "0.9.0") (markdown-mode "2.5"))
 ;;
 ;; This file is not part of GNU Emacs.
 ;;
@@ -24,7 +24,7 @@
 ;; - Context-aware suggestions based on surrounding code
 ;; - Support for multiple LLM backends (Ollama, OpenAI)
 ;; - Customizable review intervals and instructions
-;; - Typewriter-style animated output for a pleasant UX
+;; - Streaming responses appended live to a side review buffer
 ;; - Tool profiles that give the LLM access to project-specific information
 ;; - Optional integration with canon.el (separate package) for character/location
 ;;   tracking in prose
@@ -70,7 +70,6 @@
 (require 'seq)
 (require 'subr-x)
 (require 'url)
-(require 'typewrite)
 (require 'markdown-mode)
 
 (defvar polymuse-keymap
@@ -860,6 +859,15 @@ Individual backends can override this via their `prompt-format' slot."
   :type '(choice (const :tag "XML tags" xml)
                  (const :tag "JSON" json)))
 
+(defcustom polymuse-streaming t
+  "If non-nil, stream LLM responses chunk-by-chunk into the review buffer.
+
+When enabled and the active backend supports streaming, chunks are
+appended to the output buffer as they arrive (no animation, no
+artificial delay). When disabled, the full response is inserted in one
+go after the request completes."
+  :type 'boolean)
+
 (defun polymuse--serialize-prompt-xml (prompt-alist)
   "Serialize PROMPT-ALIST to a tagged XML-ish string for the LLM."
   (let* ((review-req   (alist-get 'review-request  prompt-alist))
@@ -1059,6 +1067,7 @@ FORMAT defaults to `polymuse-prompt-format'."
   "Execute REQUEST to the given BACKEND."
   (let* ((system   (plist-get args :system))
          (callback (plist-get args :callback))
+         (stream   (plist-get args :stream))
          (executor (polymuse-gptel-backend-executor backend))
          (model    (or (plist-get args :model)
                        (polymuse-backend-model backend)))
@@ -1071,11 +1080,13 @@ FORMAT defaults to `polymuse-prompt-format'."
     (let* ((gptel-backend     executor)
            (gptel-model       model)
            (gptel-temperature temperature)
+           (gptel-stream      (and stream t))
            (wire-request (if (stringp request)
                              request
                            (polymuse--serialize-prompt request)))
            (result (gptel-request wire-request
                      :system   system
+                     :stream   (and stream t)
                      :callback handler)))
       (when polymuse-debug
         (polymuse--debug-log "\n\nREQUEST:\n\n%s\n\nEND REQUEST\n\n" wire-request))
@@ -1387,16 +1398,6 @@ Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
   "Return the range of the current paragraph, from BUFFER or `(current-buffer)'."
   (polymuse--get-unit-wrapper #'backward-paragraph #'forward-paragraph buffer))
 
-(defun polymuse--handle-llm-response (review response)
-  "On LLM response, display RESPONSE in output buffer, and update REVIEW state."
-  (condition-case err
-      (when (and response
-                 (stringp response)
-                 (> (length response) 0))
-        (polymuse--display-review review response))
-    (error (message "Polymuse: error handling response for review %s: %S"
-                    (polymuse-review-state-id review) err))))
-
 (defun polymuse--run-review (src-buffer review)
   "Submit review request for SRC-BUFFER to LLM per config in REVIEW.
 
@@ -1412,25 +1413,49 @@ Validates buffer is live before submitting request."
             (new-hash (polymuse--buffer-hash)))
         (if (and old-hash (string= old-hash new-hash))
             (when polymuse-debug (message "skipping review, buffer is unchanged"))
-          (let ((prompt (polymuse--compose-prompt review)))
+          (let ((prompt (polymuse--compose-prompt review))
+                (first-chunk-p t)
+                (finalized-p nil)
+                (got-content-p nil))
             ;; Mark review as running BEFORE making the request
             (setf (polymuse-review-state-status review) 'running)
             (setf (polymuse-review-state-request-started-time review) (float-time))
             (setf (polymuse-review-state-last-run-time review) (float-time))
             ;; DON'T update hash yet - wait for successful response
-            (polymuse-request-review backend
-                                     prompt
-                                     :system   (polymuse--active-system-prompt)
-                                     :callback (lambda (response info)
-                                                 ;; Always reset status and update hash when request completes
-                                                 (unwind-protect
-                                                     (progn
-                                                       (polymuse--handle-llm-response review response)
-                                                       ;; Only update hash on successful response
-                                                       (when (and response (stringp response) (> (length response) 0))
-                                                         (setf (polymuse-review-state-last-hash review) new-hash)))
-                                                   (setf (polymuse-review-state-status review) 'idle)
-                                                   (setf (polymuse-review-state-request-started-time review) nil))))))))))
+            (cl-flet ((finalize (success)
+                        (unless finalized-p
+                          (setq finalized-p t)
+                          (when (and success got-content-p)
+                            (setf (polymuse-review-state-last-hash review) new-hash))
+                          (setf (polymuse-review-state-status review) 'idle)
+                          (setf (polymuse-review-state-request-started-time review) nil))))
+              (polymuse-request-review
+               backend prompt
+               :system   (polymuse--active-system-prompt)
+               :stream   polymuse-streaming
+               :callback (lambda (response _info)
+                           (condition-case err
+                               (cond
+                                ;; A chunk (streaming) or the full response (non-streaming).
+                                ((and (stringp response) (> (length response) 0))
+                                 (when first-chunk-p
+                                   (polymuse--display-review-begin review)
+                                   (setq first-chunk-p nil))
+                                 (polymuse--display-review-chunk review response)
+                                 (setq got-content-p t)
+                                 ;; In non-streaming mode this single call is also completion.
+                                 (unless polymuse-streaming
+                                   (finalize t)))
+                                ;; Stream complete.
+                                ((eq response t)
+                                 (finalize t))
+                                ;; Error or empty response.
+                                (t
+                                 (finalize nil)))
+                             (error
+                              (message "Polymuse: error handling response for review %s: %S"
+                                       (polymuse-review-state-id review) err)
+                              (finalize nil))))))))))))
 
 (defun polymuse--buffer-recently-active-p (buffer review-state)
   "Return t if BUFFER was recently active.
@@ -2048,32 +2073,62 @@ Returns a string suitable for appending to a review buffer."
           "\n\n"
           response))
 
-(defun polymuse--display-review (review response)
-  "Display the review in RESPONSE according to the state in REVIEW.
+(defun polymuse--display-review-begin (review &optional timestamp)
+  "Open a new review block in REVIEW's output buffer.
 
-Handles errors gracefully to prevent reviews from getting stuck in 'running' state."
+Prepares the buffer (mode, truncation) and inserts the timestamped
+header. Subsequent content should be appended via
+`polymuse--display-review-chunk'. TIMESTAMP defaults to the current
+time."
   (let ((outbuf (polymuse-review-state-output-buffer review)))
-    (condition-case err
-        (progn
-          (unless (buffer-live-p outbuf)
-            (error "Output buffer %s for review %s is not live"
-                   outbuf (polymuse-review-state-id review)))
-          (let ((formatted-response (polymuse--format-review-for-display response)))
-            (with-current-buffer outbuf
-              (let ((inhibit-read-only t))
-                (polymuse-suggestions-mode)
-                (polymuse--truncate-buffer-to-length
-                 (current-buffer)
-                 (polymuse-review-state-buffer-size-limit review)))
-              (typewrite-enqueue-job formatted-response outbuf
-                                     :inhibit-read-only t
-                                     :follow t
-                                     :cps 45))))
-      (error
-       (message "Polymuse: Failed to display review %s: %S"
-                (polymuse-review-state-id review) err)
-       ;; Ensure review status is reset even on error
-       (setf (polymuse-review-state-status review) 'idle)))))
+    (unless (buffer-live-p outbuf)
+      (error "Output buffer %s for review %s is not live"
+             outbuf (polymuse-review-state-id review)))
+    (with-current-buffer outbuf
+      (let ((inhibit-read-only t))
+        (polymuse-suggestions-mode)
+        (polymuse--truncate-buffer-to-length
+         (current-buffer)
+         (polymuse-review-state-buffer-size-limit review))
+        (goto-char (point-max))
+        (insert "\n\n>>> "
+                (format-time-string "%H:%M:%S" timestamp)
+                "\n\n")
+        (polymuse--follow-output-buffer outbuf)))))
+
+(defun polymuse--display-review-chunk (review chunk)
+  "Append CHUNK to REVIEW's output buffer.
+
+Used both for streamed chunks and for whole-response inserts in
+non-streaming mode."
+  (let ((outbuf (polymuse-review-state-output-buffer review)))
+    (when (and (buffer-live-p outbuf) (stringp chunk) (> (length chunk) 0))
+      (with-current-buffer outbuf
+        (let ((inhibit-read-only t))
+          (goto-char (point-max))
+          (insert chunk)
+          (polymuse--follow-output-buffer outbuf))))))
+
+(defun polymuse--follow-output-buffer (outbuf)
+  "Scroll any window displaying OUTBUF to its end."
+  (dolist (win (get-buffer-window-list outbuf nil t))
+    (with-selected-window win
+      (set-window-point win (point-max)))))
+
+(defun polymuse--display-review (review response)
+  "Insert a complete RESPONSE into REVIEW's output buffer.
+
+Convenience wrapper for non-streaming responses: opens a new block,
+inserts the full response, and handles errors so a failed render
+doesn't leave the review stuck in `running' state."
+  (condition-case err
+      (when (and response (stringp response) (> (length response) 0))
+        (polymuse--display-review-begin review)
+        (polymuse--display-review-chunk review response))
+    (error
+     (message "Polymuse: Failed to display review %s: %S"
+              (polymuse-review-state-id review) err)
+     (setf (polymuse-review-state-status review) 'idle))))
 
 (defun polymuse--kill-reviewer (buffer review)
   "Remove a REVIEW from BUFFER, and delete its output buffer."
