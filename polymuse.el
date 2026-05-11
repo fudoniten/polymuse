@@ -877,7 +877,6 @@ go after the request completes."
          (task         (alist-get 'task             prompt-alist))
          (mode-prompt  (alist-get 'mode-prompt      review-req))
          (buf-prompt   (alist-get 'buffer-prompt    review-req))
-         (tools        (alist-get 'tools            review-req))
          (major-mode-s (alist-get 'major_mode       environment))
          (backward     (alist-get 'backward-context context))
          (forward      (alist-get 'forward-context  context))
@@ -897,16 +896,6 @@ go after the request completes."
              "\n\n"))))
       (when (not (string-empty-p instr-content))
         (push (format "<instructions>\n%s\n</instructions>" instr-content) parts)))
-    ;; <tools> block
-    (when tools
-      (let ((tool-instr (alist-get 'instructions tools))
-            (tool-list  (alist-get 'tool-list    tools)))
-        (push (format "<tools>\n%s\n\n%s\n</tools>"
-                      (or tool-instr "")
-                      (if tool-list
-                          (json-serialize tool-list)
-                        ""))
-              parts)))
     ;; <context> block
     (push (format "<context mode=\"%s\">\n<before>\n%s\n</before>\n<focus>\n%s\n</focus>\n<after>\n%s\n</after>\n</context>"
                   (or major-mode-s "")
@@ -1065,12 +1054,13 @@ FORMAT defaults to `polymuse-prompt-format'."
 
 (cl-defmethod polymuse-request-review ((backend polymuse-gptel-backend) request &rest args)
   "Execute REQUEST to the given BACKEND."
-  (let* ((system   (plist-get args :system))
-         (callback (plist-get args :callback))
-         (stream   (plist-get args :stream))
-         (executor (polymuse-gptel-backend-executor backend))
-         (model    (or (plist-get args :model)
-                       (polymuse-backend-model backend)))
+  (let* ((system      (plist-get args :system))
+         (callback    (plist-get args :callback))
+         (stream      (plist-get args :stream))
+         (tools       (plist-get args :tools))
+         (executor    (polymuse-gptel-backend-executor backend))
+         (model       (or (plist-get args :model)
+                          (polymuse-backend-model backend)))
          (temperature (or (plist-get args :temperature)
                           (polymuse-backend-temperature backend)))
          (handler  (lambda (resp info)
@@ -1081,6 +1071,8 @@ FORMAT defaults to `polymuse-prompt-format'."
            (gptel-model       model)
            (gptel-temperature temperature)
            (gptel-stream      (and stream t))
+           (gptel-tools       (or tools '()))
+           (gptel-use-tools   (and tools (length> tools 0)))
            (wire-request (if (stringp request)
                              request
                            (polymuse--serialize-prompt request)))
@@ -1414,6 +1406,7 @@ Validates buffer is live before submitting request."
         (if (and old-hash (string= old-hash new-hash))
             (when polymuse-debug (message "skipping review, buffer is unchanged"))
           (let ((prompt (polymuse--compose-prompt review))
+                (tools  (polymuse--collect-gptel-tools))
                 (first-chunk-p t)
                 (finalized-p nil)
                 (got-content-p nil))
@@ -1433,6 +1426,7 @@ Validates buffer is live before submitting request."
                backend prompt
                :system   (polymuse--active-system-prompt)
                :stream   polymuse-streaming
+               :tools    tools
                :callback (lambda (response _info)
                            (condition-case err
                                (cond
@@ -1758,15 +1752,25 @@ suggest improvements without modifying the canon directly."
     :description "Suggest an update to a specific section of a documentation entity. Use this to note inaccuracies or suggest improvements. The suggestion will be added to the 'Suggestions' section for user review. This does NOT modify the document directly."
     :arguments '(doc-id section-name suggestion))))
 
-(defun polymuse--format-tools-prompt ()
-  "Format tools prompt for LLM from all tool sources."
-  (let ((tools (polymuse--collect-tools)))
-    (vconcat
-     (mapcar (lambda (tool)
-               `((tool-name        . ,(polymuse-tool-name tool))
-                 (tool-args        . ,(vconcat (mapcar #'symbol-name (polymuse-tool-arguments tool))))
-                 (tool-description . ,(polymuse-tool-description tool))))
-             tools))))
+(defun polymuse--to-gptel-tool (tool)
+  "Convert a TOOL (polymuse-tool struct) to a gptel tool for native tool use."
+  (gptel-make-tool
+   :name (polymuse-tool-name tool)
+   :function (polymuse-tool-function tool)
+   :description (polymuse-tool-description tool)
+   :args (mapcar (lambda (arg)
+                   (list :name (symbol-name arg)
+                         :type 'string
+                         :description (symbol-name arg)))
+                 (polymuse-tool-arguments tool))))
+
+(defun polymuse--collect-gptel-tools ()
+  "Return all active tools as a list of gptel tool objects.
+
+Uses the same layered collection as `polymuse--collect-tools', but
+converts each tool to a `gptel-tool' struct so gptel can manage the
+tool-call round-trip natively."
+  (mapcar #'polymuse--to-gptel-tool (polymuse--collect-tools)))
 
 (defun polymuse--calculate-context-regions (max-chars mode-prompt local-prompt current-unit)
   "Calculate forward and backward context regions within budget.
@@ -1815,17 +1819,18 @@ making it easy to test without buffer-local state. REVIEW-PARAMS should be
 a plist containing:
   :mode-prompt          Mode-specific prompt string
   :local-prompt         Buffer-specific instructions
-  :tools-prompt         Vector of tool definitions
   :backward-context     String of context before point
   :forward-context      String of context after point
   :current-unit         String of the current focus region
   :previous-review      String of previous review (optional)
   :major-mode           Symbol of the major mode
   :include-previous-review Boolean
-  :final-instructions   String of final instructions (optional)"
+  :final-instructions   String of final instructions (optional)
+
+Tools are no longer embedded in the prompt; they are passed separately to
+the backend via `polymuse--collect-gptel-tools' and gptel's native tool API."
   (let ((mode-prompt (plist-get review-params :mode-prompt))
         (local-prompt (plist-get review-params :local-prompt))
-        (tools-prompt (plist-get review-params :tools-prompt))
         (backward-context (plist-get review-params :backward-context))
         (forward-context (plist-get review-params :forward-context))
         (current-unit (plist-get review-params :current-unit))
@@ -1835,11 +1840,7 @@ a plist containing:
         (final-instructions (plist-get review-params :final-instructions)))
     `((review-request
        . ((mode-prompt       . ,mode-prompt)
-          (buffer-prompt     . ,local-prompt)
-          ,@(when tools-prompt
-              (list `(tools . ((instructions
-                                . "If you need more info, respond with JSON ONLY: {\"action\":\"tool-call\",\"tool\":\"<name>\",\"arguments\":{\"arg\":\"value\"}}. You'll receive the result and can then provide your review.")
-                               (tool-list . ,tools-prompt)))))))
+          (buffer-prompt     . ,local-prompt)))
       (environment
        . ((major_mode . ,(symbol-name major-mode-sym))))
       (context
@@ -1850,7 +1851,7 @@ a plist containing:
       (current
        . ((focus-region . ,current-unit)))
       (task
-       . ((focus   . "Review `focus-region` acording tho the instructions in `buffer-prompt`, use `backward-context` and `forward-context` for reference only.")
+       . ((focus   . "Review `focus-region` according to the instructions in `buffer-prompt`, use `backward-context` and `forward-context` for reference only.")
           ,@(when include-previous-review
               (list '(previous . "Don't repeat points from `previous-review`; offer new insights only.")))
           ,@(when final-instructions
@@ -1861,7 +1862,6 @@ a plist containing:
   (let* ((mode-prompt   (or (polymuse-get-mode-prompt) ""))
          (local-prompt  (or (polymuse-review-state-instructions review) ""))
          (max-chars     (or polymuse-max-prompt-characters most-positive-fixnum))
-         (tools-prompt  (polymuse--format-tools-prompt))
          (current-unit  (funcall polymuse--unit-grabber))
          (context-regions (polymuse--calculate-context-regions
                            max-chars mode-prompt local-prompt current-unit))
@@ -1873,7 +1873,6 @@ a plist containing:
     (polymuse--compose-prompt-from-context
      (list :mode-prompt mode-prompt
            :local-prompt local-prompt
-           :tools-prompt tools-prompt
            :backward-context (polymuse--region-string backward-context)
            :forward-context (polymuse--region-string forward-context)
            :current-unit (polymuse--region-string current-unit)
@@ -2328,16 +2327,12 @@ Returns a plist suitable for passing to
         :final-instructions nil))
 
 (defun polymuse-test-fixture-context-with-tools ()
-  "Create a test context with tools for prompt composition testing.
+  "Create a test context that would accompany tool use.
 
-Returns a plist with sample tool definitions included."
-  (let ((base-context (polymuse-test-fixture-simple-context)))
-    (plist-put base-context :tools-prompt
-               (vector
-                '((tool-name . "lookup-doc")
-                  (tool-args . ["doc-id"])
-                  (tool-description . "Look up documentation by ID"))))
-    base-context))
+Returns a plist suitable for `polymuse--compose-prompt-from-context'.
+Tools are no longer embedded in the prompt; they are collected separately
+via `polymuse--collect-gptel-tools' and passed to the backend."
+  (polymuse-test-fixture-simple-context))
 
 (defun polymuse-test-create-mock-review-state (&optional backend)
   "Create a mock review state for testing.

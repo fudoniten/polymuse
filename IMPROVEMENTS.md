@@ -9,7 +9,7 @@
 - [ ] Fix 5 — Gate forward context for code mode
 - [ ] Fix 6 — Structured findings format for code mode
 - [ ] Fix 7 — Track flagged findings to avoid repetition (code mode)
-- [ ] Fix 8 — Switch tool calls to gptel's native tool API
+- [x] Fix 8 — Switch tool calls to gptel's native tool API
 - [x] Fix 9 — Enable real streaming; remove fake typewriter
 - [ ] Fix 10 — Harden sexp unit grabber with size sanity check
 

@@ -70,14 +70,15 @@
     (should (assq 'major_mode env))
     (should (string= (alist-get 'major_mode env) "emacs-lisp-mode"))))
 
-(ert-deftest polymuse-test-compose-prompt-with-tools ()
-  "Test prompt composition with tools."
+(ert-deftest polymuse-test-compose-prompt-without-inline-tools ()
+  "Verify tools are no longer embedded in the prompt alist.
+
+Tools are now passed to gptel natively via `polymuse--collect-gptel-tools'
+and should not appear in the prompt structure at all."
   (let* ((context (polymuse-test-fixture-context-with-tools))
          (prompt (polymuse--compose-prompt-from-context context))
          (req (alist-get 'review-request prompt)))
-    (should (assq 'tools req))
-    (let ((tools (alist-get 'tools req)))
-      (should (assq 'tool-list tools)))))
+    (should-not (assq 'tools req))))
 
 (ert-deftest polymuse-test-compose-prompt-context-strings ()
   "Test that context strings are included in prompt."
@@ -310,11 +311,12 @@
     (should (polymuse--valid-context-params-p context))))
 
 (ert-deftest polymuse-test-context-with-tools-fixture ()
-  "Test context with tools fixture includes tools."
+  "Test that the tools fixture is valid context params.
+
+Tools are no longer stored in the context plist; they are collected
+at request time via `polymuse--collect-gptel-tools'."
   (let ((context (polymuse-test-fixture-context-with-tools)))
-    (should (plist-get context :tools-prompt))
-    (should (vectorp (plist-get context :tools-prompt)))
-    (should (> (length (plist-get context :tools-prompt)) 0))))
+    (should (polymuse--valid-context-params-p context))))
 
 ;;;; Error Handling Tests
 
