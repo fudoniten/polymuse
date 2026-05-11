@@ -8,7 +8,7 @@ An AI-powered "over-the-shoulder" coding assistant for Emacs that provides conti
 - **Context-aware suggestions** based on surrounding code
 - **Multiple LLM backend support** (Ollama, OpenAI)
 - **Customizable review intervals** and instructions
-- **Typewriter-style animated output** for a pleasant user experience
+- **Streaming responses** appended live to a side review buffer
 - **Mode-specific prompts** for different file types (code vs. prose)
 
 ## Requirements
@@ -16,7 +16,6 @@ An AI-powered "over-the-shoulder" coding assistant for Emacs that provides conti
 - Emacs 29.3 or later
 - gptel 0.9.0 or later
 - markdown-mode 2.5 or later
-- typewrite 0.1.0 or later (for animated output display)
 
 ## Quick Start
 
@@ -90,7 +89,7 @@ M-x polymuse-define-default-backend
 
 ### Using Nix (Recommended for NixOS/Home Manager users)
 
-This package provides a Nix flake for easy integration into NixOS or Home Manager configurations. The flake automatically includes the `typewrite` dependency, so you don't need to add it separately.
+This package provides a Nix flake for easy integration into NixOS or Home Manager configurations.
 
 ```nix
 {
@@ -100,7 +99,7 @@ This package provides a Nix flake for easy integration into NixOS or Home Manage
   nixpkgs.overlays = [ polymuse.overlays.default ];
 
   programs.emacs.extraPackages = epkgs: with epkgs; [
-    polymuse  # Automatically includes typewrite, gptel, and markdown-mode
+    polymuse  # Automatically includes gptel and markdown-mode
   ];
 }
 ```

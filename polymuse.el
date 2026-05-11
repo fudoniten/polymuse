@@ -9,7 +9,7 @@
 ;; Version: 0.0.1
 ;; Keywords: docs outlines processes terminals text tools
 ;; Homepage: https://github.com/niten/polymuse
-;; Package-Requires: ((emacs "29.3") (gptel "0.9.0") (markdown-mode "2.5") (typewrite "0.1.0"))
+;; Package-Requires: ((emacs "29.3") (gptel "0.9.0") (markdown-mode "2.5"))
 ;;
 ;; This file is not part of GNU Emacs.
 ;;
@@ -24,7 +24,7 @@
 ;; - Context-aware suggestions based on surrounding code
 ;; - Support for multiple LLM backends (Ollama, OpenAI)
 ;; - Customizable review intervals and instructions
-;; - Typewriter-style animated output for a pleasant UX
+;; - Streaming responses appended live to a side review buffer
 ;; - Tool profiles that give the LLM access to project-specific information
 ;; - Optional integration with canon.el (separate package) for character/location
 ;;   tracking in prose
@@ -70,7 +70,6 @@
 (require 'seq)
 (require 'subr-x)
 (require 'url)
-(require 'typewrite)
 (require 'markdown-mode)
 
 (defvar polymuse-keymap
@@ -848,6 +847,87 @@ Returns a list of model names on success, or signals an error on failure."
     (json-pretty-print-buffer)
     (buffer-string)))
 
+(defcustom polymuse-prompt-format 'xml
+  "Wire format used when sending prompts to the LLM.
+
+`xml'  — section-tagged layout; works well with Claude and GPT-4-class
+         models and is easy to read in the debug buffer.
+`json' — JSON-serialized alist; useful for models or tooling that expect
+         structured input.
+
+Individual backends can override this via their `prompt-format' slot."
+  :type '(choice (const :tag "XML tags" xml)
+                 (const :tag "JSON" json)))
+
+(defcustom polymuse-streaming t
+  "If non-nil, stream LLM responses chunk-by-chunk into the review buffer.
+
+When enabled and the active backend supports streaming, chunks are
+appended to the output buffer as they arrive (no animation, no
+artificial delay). When disabled, the full response is inserted in one
+go after the request completes."
+  :type 'boolean)
+
+(defun polymuse--serialize-prompt-xml (prompt-alist)
+  "Serialize PROMPT-ALIST to a tagged XML-ish string for the LLM."
+  (let* ((review-req   (alist-get 'review-request  prompt-alist))
+         (environment  (alist-get 'environment      prompt-alist))
+         (context      (alist-get 'context          prompt-alist))
+         (current      (alist-get 'current          prompt-alist))
+         (task         (alist-get 'task             prompt-alist))
+         (mode-prompt  (alist-get 'mode-prompt      review-req))
+         (buf-prompt   (alist-get 'buffer-prompt    review-req))
+         (major-mode-s (alist-get 'major_mode       environment))
+         (backward     (alist-get 'backward-context context))
+         (forward      (alist-get 'forward-context  context))
+         (prev-review  (alist-get 'previous-review  context))
+         (focus        (alist-get 'focus-region     current))
+         (task-focus   (alist-get 'focus            task))
+         (task-prev    (alist-get 'previous         task))
+         (task-instr   (alist-get 'instructions     task))
+         (parts        '()))
+    ;; <instructions> block
+    (let ((instr-content
+           (string-trim
+            (string-join
+             (delq nil (list mode-prompt
+                             (when (and buf-prompt (not (string-empty-p buf-prompt)))
+                               buf-prompt)))
+             "\n\n"))))
+      (when (not (string-empty-p instr-content))
+        (push (format "<instructions>\n%s\n</instructions>" instr-content) parts)))
+    ;; <context> block
+    (push (format "<context mode=\"%s\">\n<before>\n%s\n</before>\n<focus>\n%s\n</focus>\n<after>\n%s\n</after>\n</context>"
+                  (or major-mode-s "")
+                  (or backward "")
+                  (or focus "")
+                  (or forward ""))
+          parts)
+    ;; <previous_review> block
+    (when (and prev-review (not (string-empty-p prev-review)))
+      (push (format "<previous_review>\n%s\n</previous_review>" prev-review) parts))
+    ;; <task> block
+    (let ((task-content
+           (string-trim
+            (string-join
+             (delq nil (list task-focus task-prev task-instr))
+             "\n"))))
+      (when (not (string-empty-p task-content))
+        (push (format "<task>\n%s\n</task>" task-content) parts)))
+    (string-join (nreverse parts) "\n\n")))
+
+(defun polymuse--serialize-prompt-json (prompt-alist)
+  "Serialize PROMPT-ALIST to a pretty-printed JSON string for the LLM."
+  (polymuse--format-json (json-serialize prompt-alist)))
+
+(defun polymuse--serialize-prompt (prompt-alist &optional format)
+  "Serialize PROMPT-ALIST to a string using FORMAT (`xml' or `json').
+
+FORMAT defaults to `polymuse-prompt-format'."
+  (pcase (or format polymuse-prompt-format)
+    ('json (polymuse--serialize-prompt-json prompt-alist))
+    (_     (polymuse--serialize-prompt-xml  prompt-alist))))
+
 (defun polymuse--setup-openai-backend ()
   "Interactively create an OpenAI polymuse backend using gptel."
   (let* ((model (read-string "OpenAI model (e.g. gpt-4o-mini): " "gpt-4o-mini"))
@@ -974,11 +1054,13 @@ Returns a list of model names on success, or signals an error on failure."
 
 (cl-defmethod polymuse-request-review ((backend polymuse-gptel-backend) request &rest args)
   "Execute REQUEST to the given BACKEND."
-  (let* ((system   (plist-get args :system))
-         (callback (plist-get args :callback))
-         (executor (polymuse-gptel-backend-executor backend))
-         (model    (or (plist-get args :model)
-                       (polymuse-backend-model backend)))
+  (let* ((system      (plist-get args :system))
+         (callback    (plist-get args :callback))
+         (stream      (plist-get args :stream))
+         (tools       (plist-get args :tools))
+         (executor    (polymuse-gptel-backend-executor backend))
+         (model       (or (plist-get args :model)
+                          (polymuse-backend-model backend)))
          (temperature (or (plist-get args :temperature)
                           (polymuse-backend-temperature backend)))
          (handler  (lambda (resp info)
@@ -988,12 +1070,18 @@ Returns a list of model names on success, or signals an error on failure."
     (let* ((gptel-backend     executor)
            (gptel-model       model)
            (gptel-temperature temperature)
-           (result (gptel-request request
+           (gptel-stream      (and stream t))
+           (gptel-tools       (or tools '()))
+           (gptel-use-tools   (and tools (length> tools 0)))
+           (wire-request (if (stringp request)
+                             request
+                           (polymuse--serialize-prompt request)))
+           (result (gptel-request wire-request
                      :system   system
+                     :stream   (and stream t)
                      :callback handler)))
       (when polymuse-debug
-        (polymuse--debug-log "\n\nREQUEST:\n\n%s\n\nEND REQUEST\n\n"
-                             (polymuse--format-json (json-serialize request))))
+        (polymuse--debug-log "\n\nREQUEST:\n\n%s\n\nEND REQUEST\n\n" wire-request))
       result)))
 
 (cl-defmethod polymuse-request-review ((backend polymuse-mock-backend) request &rest args)
@@ -1008,7 +1096,9 @@ mock response, making it suitable for testing without network calls."
                      "Mock review response for testing.")))
     (when polymuse-debug
       (polymuse--debug-log "\n\nMOCK REQUEST:\n\n%s\n\nEND REQUEST\n\n"
-                           (polymuse--format-json (json-serialize request)))
+                           (if (stringp request)
+                               request
+                             (polymuse--serialize-prompt request)))
       (polymuse--debug-log "\n\nMOCK RESPONSE:\n\n%s\n\nEND RESPONSE\n\n" response))
     (when callback
       (funcall callback response nil))
@@ -1071,8 +1161,28 @@ mock response, making it suitable for testing without network calls."
      "Share observations, ideas, and reactions. If something sparks a thought or possibility, share it."
      "Keep responses conversational and under 200 words unless exploring something particularly interesting.")
    " ")
-  "Base system prompt for polymuse."
+  "Base system prompt for polymuse. Used for prose and as the default fallback."
   :type 'string)
+
+(defcustom polymuse-code-system-prompt
+  (string-join
+   '("You are a careful code reviewer providing real-time feedback."
+     "Flag only genuine problems: bugs, unhandled edge cases, unclear naming, or needlessly complex structure."
+     "Be terse and concrete. Cite the specific line or expression you are flagging."
+     "If there is nothing worth flagging, say so in one line."
+     "Do not offer praise, speculation, or style commentary unless it obscures correctness.")
+   " ")
+  "System prompt used when reviewing code (buffers derived from `prog-mode').
+
+This is intentionally terser and more concrete than `polymuse-system-prompt',
+which is tuned for prose."
+  :type 'string)
+
+(defun polymuse--active-system-prompt ()
+  "Return the system prompt appropriate for the current buffer's major mode."
+  (if (derived-mode-p 'prog-mode)
+      polymuse-code-system-prompt
+    polymuse-system-prompt))
 
 (defcustom polymuse-mode-prompts
   '((prog-mode . "Review the code in `focus-region`. Check for: (1) bugs, edge cases, or incorrect logic; (2) potential errors or exceptions not handled; (3) unclear naming or confusing structure; (4) opportunities to simplify or use better patterns/libraries. Ignore trivial style issues.")
@@ -1280,16 +1390,6 @@ Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
   "Return the range of the current paragraph, from BUFFER or `(current-buffer)'."
   (polymuse--get-unit-wrapper #'backward-paragraph #'forward-paragraph buffer))
 
-(defun polymuse--handle-llm-response (review response)
-  "On LLM response, display RESPONSE in output buffer, and update REVIEW state."
-  (condition-case err
-      (when (and response
-                 (stringp response)
-                 (> (length response) 0))
-        (polymuse--display-review review response))
-    (error (message "Polymuse: error handling response for review %s: %S"
-                    (polymuse-review-state-id review) err))))
-
 (defun polymuse--run-review (src-buffer review)
   "Submit review request for SRC-BUFFER to LLM per config in REVIEW.
 
@@ -1305,25 +1405,51 @@ Validates buffer is live before submitting request."
             (new-hash (polymuse--buffer-hash)))
         (if (and old-hash (string= old-hash new-hash))
             (when polymuse-debug (message "skipping review, buffer is unchanged"))
-          (let ((prompt (polymuse--compose-prompt review)))
+          (let ((prompt (polymuse--compose-prompt review))
+                (tools  (polymuse--collect-gptel-tools))
+                (first-chunk-p t)
+                (finalized-p nil)
+                (got-content-p nil))
             ;; Mark review as running BEFORE making the request
             (setf (polymuse-review-state-status review) 'running)
             (setf (polymuse-review-state-request-started-time review) (float-time))
             (setf (polymuse-review-state-last-run-time review) (float-time))
             ;; DON'T update hash yet - wait for successful response
-            (polymuse-request-review backend
-                                     prompt
-                                     :system   polymuse-system-prompt
-                                     :callback (lambda (response info)
-                                                 ;; Always reset status and update hash when request completes
-                                                 (unwind-protect
-                                                     (progn
-                                                       (polymuse--handle-llm-response review response)
-                                                       ;; Only update hash on successful response
-                                                       (when (and response (stringp response) (> (length response) 0))
-                                                         (setf (polymuse-review-state-last-hash review) new-hash)))
-                                                   (setf (polymuse-review-state-status review) 'idle)
-                                                   (setf (polymuse-review-state-request-started-time review) nil))))))))))
+            (cl-flet ((finalize (success)
+                        (unless finalized-p
+                          (setq finalized-p t)
+                          (when (and success got-content-p)
+                            (setf (polymuse-review-state-last-hash review) new-hash))
+                          (setf (polymuse-review-state-status review) 'idle)
+                          (setf (polymuse-review-state-request-started-time review) nil))))
+              (polymuse-request-review
+               backend prompt
+               :system   (polymuse--active-system-prompt)
+               :stream   polymuse-streaming
+               :tools    tools
+               :callback (lambda (response _info)
+                           (condition-case err
+                               (cond
+                                ;; A chunk (streaming) or the full response (non-streaming).
+                                ((and (stringp response) (> (length response) 0))
+                                 (when first-chunk-p
+                                   (polymuse--display-review-begin review)
+                                   (setq first-chunk-p nil))
+                                 (polymuse--display-review-chunk review response)
+                                 (setq got-content-p t)
+                                 ;; In non-streaming mode this single call is also completion.
+                                 (unless polymuse-streaming
+                                   (finalize t)))
+                                ;; Stream complete.
+                                ((eq response t)
+                                 (finalize t))
+                                ;; Error or empty response.
+                                (t
+                                 (finalize nil)))
+                             (error
+                              (message "Polymuse: error handling response for review %s: %S"
+                                       (polymuse-review-state-id review) err)
+                              (finalize nil))))))))))))
 
 (defun polymuse--buffer-recently-active-p (buffer review-state)
   "Return t if BUFFER was recently active.
@@ -1626,15 +1752,25 @@ suggest improvements without modifying the canon directly."
     :description "Suggest an update to a specific section of a documentation entity. Use this to note inaccuracies or suggest improvements. The suggestion will be added to the 'Suggestions' section for user review. This does NOT modify the document directly."
     :arguments '(doc-id section-name suggestion))))
 
-(defun polymuse--format-tools-prompt ()
-  "Format tools prompt for LLM from all tool sources."
-  (let ((tools (polymuse--collect-tools)))
-    (vconcat
-     (mapcar (lambda (tool)
-               `((tool-name        . ,(polymuse-tool-name tool))
-                 (tool-args        . ,(vconcat (mapcar #'symbol-name (polymuse-tool-arguments tool))))
-                 (tool-description . ,(polymuse-tool-description tool))))
-             tools))))
+(defun polymuse--to-gptel-tool (tool)
+  "Convert a TOOL (polymuse-tool struct) to a gptel tool for native tool use."
+  (gptel-make-tool
+   :name (polymuse-tool-name tool)
+   :function (polymuse-tool-function tool)
+   :description (polymuse-tool-description tool)
+   :args (mapcar (lambda (arg)
+                   (list :name (symbol-name arg)
+                         :type 'string
+                         :description (symbol-name arg)))
+                 (polymuse-tool-arguments tool))))
+
+(defun polymuse--collect-gptel-tools ()
+  "Return all active tools as a list of gptel tool objects.
+
+Uses the same layered collection as `polymuse--collect-tools', but
+converts each tool to a `gptel-tool' struct so gptel can manage the
+tool-call round-trip natively."
+  (mapcar #'polymuse--to-gptel-tool (polymuse--collect-tools)))
 
 (defun polymuse--calculate-context-regions (max-chars mode-prompt local-prompt current-unit)
   "Calculate forward and backward context regions within budget.
@@ -1683,17 +1819,18 @@ making it easy to test without buffer-local state. REVIEW-PARAMS should be
 a plist containing:
   :mode-prompt          Mode-specific prompt string
   :local-prompt         Buffer-specific instructions
-  :tools-prompt         Vector of tool definitions
   :backward-context     String of context before point
   :forward-context      String of context after point
   :current-unit         String of the current focus region
   :previous-review      String of previous review (optional)
   :major-mode           Symbol of the major mode
   :include-previous-review Boolean
-  :final-instructions   String of final instructions (optional)"
+  :final-instructions   String of final instructions (optional)
+
+Tools are no longer embedded in the prompt; they are passed separately to
+the backend via `polymuse--collect-gptel-tools' and gptel's native tool API."
   (let ((mode-prompt (plist-get review-params :mode-prompt))
         (local-prompt (plist-get review-params :local-prompt))
-        (tools-prompt (plist-get review-params :tools-prompt))
         (backward-context (plist-get review-params :backward-context))
         (forward-context (plist-get review-params :forward-context))
         (current-unit (plist-get review-params :current-unit))
@@ -1703,11 +1840,7 @@ a plist containing:
         (final-instructions (plist-get review-params :final-instructions)))
     `((review-request
        . ((mode-prompt       . ,mode-prompt)
-          (buffer-prompt     . ,local-prompt)
-          ,@(when tools-prompt
-              (list `(tools . ((instructions
-                                . "If you need more info, respond with JSON ONLY: {\"action\":\"tool-call\",\"tool\":\"<name>\",\"arguments\":{\"arg\":\"value\"}}. You'll receive the result and can then provide your review.")
-                               (tool-list . ,tools-prompt)))))))
+          (buffer-prompt     . ,local-prompt)))
       (environment
        . ((major_mode . ,(symbol-name major-mode-sym))))
       (context
@@ -1718,7 +1851,7 @@ a plist containing:
       (current
        . ((focus-region . ,current-unit)))
       (task
-       . ((focus   . "Review `focus-region` acording tho the instructions in `buffer-prompt`, use `backward-context` and `forward-context` for reference only.")
+       . ((focus   . "Review `focus-region` according to the instructions in `buffer-prompt`, use `backward-context` and `forward-context` for reference only.")
           ,@(when include-previous-review
               (list '(previous . "Don't repeat points from `previous-review`; offer new insights only.")))
           ,@(when final-instructions
@@ -1729,7 +1862,6 @@ a plist containing:
   (let* ((mode-prompt   (or (polymuse-get-mode-prompt) ""))
          (local-prompt  (or (polymuse-review-state-instructions review) ""))
          (max-chars     (or polymuse-max-prompt-characters most-positive-fixnum))
-         (tools-prompt  (polymuse--format-tools-prompt))
          (current-unit  (funcall polymuse--unit-grabber))
          (context-regions (polymuse--calculate-context-regions
                            max-chars mode-prompt local-prompt current-unit))
@@ -1741,7 +1873,6 @@ a plist containing:
     (polymuse--compose-prompt-from-context
      (list :mode-prompt mode-prompt
            :local-prompt local-prompt
-           :tools-prompt tools-prompt
            :backward-context (polymuse--region-string backward-context)
            :forward-context (polymuse--region-string forward-context)
            :current-unit (polymuse--region-string current-unit)
@@ -1941,32 +2072,62 @@ Returns a string suitable for appending to a review buffer."
           "\n\n"
           response))
 
-(defun polymuse--display-review (review response)
-  "Display the review in RESPONSE according to the state in REVIEW.
+(defun polymuse--display-review-begin (review &optional timestamp)
+  "Open a new review block in REVIEW's output buffer.
 
-Handles errors gracefully to prevent reviews from getting stuck in 'running' state."
+Prepares the buffer (mode, truncation) and inserts the timestamped
+header. Subsequent content should be appended via
+`polymuse--display-review-chunk'. TIMESTAMP defaults to the current
+time."
   (let ((outbuf (polymuse-review-state-output-buffer review)))
-    (condition-case err
-        (progn
-          (unless (buffer-live-p outbuf)
-            (error "Output buffer %s for review %s is not live"
-                   outbuf (polymuse-review-state-id review)))
-          (let ((formatted-response (polymuse--format-review-for-display response)))
-            (with-current-buffer outbuf
-              (let ((inhibit-read-only t))
-                (polymuse-suggestions-mode)
-                (polymuse--truncate-buffer-to-length
-                 (current-buffer)
-                 (polymuse-review-state-buffer-size-limit review)))
-              (typewrite-enqueue-job formatted-response outbuf
-                                     :inhibit-read-only t
-                                     :follow t
-                                     :cps 45))))
-      (error
-       (message "Polymuse: Failed to display review %s: %S"
-                (polymuse-review-state-id review) err)
-       ;; Ensure review status is reset even on error
-       (setf (polymuse-review-state-status review) 'idle)))))
+    (unless (buffer-live-p outbuf)
+      (error "Output buffer %s for review %s is not live"
+             outbuf (polymuse-review-state-id review)))
+    (with-current-buffer outbuf
+      (let ((inhibit-read-only t))
+        (polymuse-suggestions-mode)
+        (polymuse--truncate-buffer-to-length
+         (current-buffer)
+         (polymuse-review-state-buffer-size-limit review))
+        (goto-char (point-max))
+        (insert "\n\n>>> "
+                (format-time-string "%H:%M:%S" timestamp)
+                "\n\n")
+        (polymuse--follow-output-buffer outbuf)))))
+
+(defun polymuse--display-review-chunk (review chunk)
+  "Append CHUNK to REVIEW's output buffer.
+
+Used both for streamed chunks and for whole-response inserts in
+non-streaming mode."
+  (let ((outbuf (polymuse-review-state-output-buffer review)))
+    (when (and (buffer-live-p outbuf) (stringp chunk) (> (length chunk) 0))
+      (with-current-buffer outbuf
+        (let ((inhibit-read-only t))
+          (goto-char (point-max))
+          (insert chunk)
+          (polymuse--follow-output-buffer outbuf))))))
+
+(defun polymuse--follow-output-buffer (outbuf)
+  "Scroll any window displaying OUTBUF to its end."
+  (dolist (win (get-buffer-window-list outbuf nil t))
+    (with-selected-window win
+      (set-window-point win (point-max)))))
+
+(defun polymuse--display-review (review response)
+  "Insert a complete RESPONSE into REVIEW's output buffer.
+
+Convenience wrapper for non-streaming responses: opens a new block,
+inserts the full response, and handles errors so a failed render
+doesn't leave the review stuck in `running' state."
+  (condition-case err
+      (when (and response (stringp response) (> (length response) 0))
+        (polymuse--display-review-begin review)
+        (polymuse--display-review-chunk review response))
+    (error
+     (message "Polymuse: Failed to display review %s: %S"
+              (polymuse-review-state-id review) err)
+     (setf (polymuse-review-state-status review) 'idle))))
 
 (defun polymuse--kill-reviewer (buffer review)
   "Remove a REVIEW from BUFFER, and delete its output buffer."
@@ -2166,16 +2327,12 @@ Returns a plist suitable for passing to
         :final-instructions nil))
 
 (defun polymuse-test-fixture-context-with-tools ()
-  "Create a test context with tools for prompt composition testing.
+  "Create a test context that would accompany tool use.
 
-Returns a plist with sample tool definitions included."
-  (let ((base-context (polymuse-test-fixture-simple-context)))
-    (plist-put base-context :tools-prompt
-               (vector
-                '((tool-name . "lookup-doc")
-                  (tool-args . ["doc-id"])
-                  (tool-description . "Look up documentation by ID"))))
-    base-context))
+Returns a plist suitable for `polymuse--compose-prompt-from-context'.
+Tools are no longer embedded in the prompt; they are collected separately
+via `polymuse--collect-gptel-tools' and passed to the backend."
+  (polymuse-test-fixture-simple-context))
 
 (defun polymuse-test-create-mock-review-state (&optional backend)
   "Create a mock review state for testing.
