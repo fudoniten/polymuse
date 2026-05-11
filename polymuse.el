@@ -339,7 +339,8 @@ If BUFFER is nil, applies to the current buffer."
 (defun polymuse-toggle-include-previous-review ()
   "Toggle `include-previous-review' setting."
   (interactive)
-  (setq-local polymuse-include-previous-review (not polymuse-include-previous-review)))
+  (setq-local polymuse-include-previous-review (not polymuse-include-previous-review))
+  (message "Include previous review: %s" polymuse-include-previous-review))
 
 (defun polymuse-use-config (config-name)
   "Switch to configuration preset CONFIG-NAME, found in `polymuse-config-presets'.
@@ -857,7 +858,7 @@ Returns a list of model names on success, or signals an error on failure."
 
 Individual backends can override this via their `prompt-format' slot."
   :type '(choice (const :tag "XML tags" xml)
-                 (const :tag "JSON" json)))
+          (const :tag "JSON" json)))
 
 (defcustom polymuse-streaming t
   "If non-nil, stream LLM responses chunk-by-chunk into the review buffer.
@@ -2238,6 +2239,7 @@ Validates inputs to prevent token limit issues and configuration errors."
   REVIEW-CONTEXT is the number of lines of earlier review to include in the
     prompt."
   (interactive)
+  (polymuse-mode 1)
   (let ((actual-backend (or backend (polymuse-find-backend (polymuse--interactive-setup-backend)))))
     (polymuse--add-reviewer-impl actual-backend id instructions interval 
                                  buffer-size-limit review-context out-buffer)))
