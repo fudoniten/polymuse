@@ -75,6 +75,7 @@
 (defvar polymuse-keymap
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-r e") #'polymuse-edit-instructions)
+    (define-key map (kbd "C-c C-r m") #'polymuse-switch-model)
     (define-key map (kbd "C-c C-r r") #'polymuse-run-review)
     (define-key map (kbd "C-c C-r d") #'polymuse-kill-reviewer)
     (define-key map (kbd "C-c C-r D") #'polymuse-kill-all-reviewers)
@@ -1989,6 +1990,95 @@ the backend via `polymuse--collect-gptel-tools' and gptel's native tool API."
     (user-error "This command must be called from a polymuse instructions buffer"))
   (quit-window 'kill))
 
+(defun polymuse--fetch-models-for-backend (backend)
+  "Try to fetch available model names for BACKEND.
+
+For Ollama-style backends, queries the backend host's `/api/tags'
+endpoint and returns the list of model name strings.  Returns nil if
+the backend is not a gptel backend, if no host/protocol is available,
+or if the request fails for any reason (network error, non-Ollama
+endpoint, etc.)."
+  (when (polymuse-gptel-backend-p backend)
+    (let* ((executor (polymuse-gptel-backend-executor backend))
+           (host     (gptel-backend-host executor))
+           (protocol (gptel-backend-protocol executor)))
+      (when (and host protocol)
+        (condition-case nil
+            (polymuse-ollama-list-models host protocol)
+          (error nil))))))
+
+(defun polymuse--clone-backend-with-model (backend new-model)
+  "Return a new private backend derived from BACKEND but using NEW-MODEL.
+
+The new instance is not registered in `polymuse-backends', so it does
+not affect any other reviewer that might share the original backend.
+
+For Ollama-style backends the Ollama gptel executor is rebuilt so that
+gptel uses the correct model on the wire.  For OpenAI-style backends a
+new OpenAI executor is created with the new model name."
+  (let* ((executor    (polymuse-gptel-backend-executor backend))
+         (host        (gptel-backend-host executor))
+         (protocol    (gptel-backend-protocol executor))
+         (temperature (polymuse-backend-temperature backend))
+         (new-id      (intern (format "private-%s" new-model)))
+         (new-executor
+          (cond
+           ;; Ollama-style: host is present and is not the OpenAI endpoint
+           ((and host protocol
+                 (not (string-match-p "openai\\.com" (or host ""))))
+            (polymuse-create-ollama-executor new-id host new-model protocol))
+           ;; OpenAI-style (or any other gptel-compatible endpoint)
+           (t
+            (polymuse-create-openai-executor new-id new-model)))))
+    (make-polymuse-gptel-backend
+     :id          new-id
+     :model       new-model
+     :temperature temperature
+     :executor    new-executor)))
+
+;;;###autoload
+(defun polymuse-switch-model ()
+  "Switch the LLM model for a Polymuse reviewer.
+
+Prompts to select a reviewer (if more than one exists for the buffer),
+then presents available models.  For Ollama-style backends the list is
+fetched from the running server; for other backends the model name is
+entered manually.
+
+The switch is local to the selected reviewer — other reviewers that
+share the same backend object are not affected."
+  (interactive)
+  (let* ((buf           (current-buffer))
+         (review        (polymuse--select-review buf))
+         (backend       (polymuse-review-state-backend review))
+         (current-model (polymuse-backend-model backend))
+         (reviewer-id   (polymuse-review-state-id review))
+         (models        (when (polymuse-gptel-backend-p backend)
+                          (progn
+                            (message "Fetching models...")
+                            (polymuse--fetch-models-for-backend backend))))
+         (new-model     (if models
+                            (completing-read
+                             (format "Switch model for %s (current: %s): "
+                                     reviewer-id current-model)
+                             models nil nil current-model)
+                          (read-string
+                           (format "Model name for %s (current: %s): "
+                                   reviewer-id current-model)
+                           current-model))))
+    (when (string-empty-p new-model)
+      (user-error "Model name cannot be empty"))
+    (if (equal new-model current-model)
+        (message "Model unchanged: %s" current-model)
+      (let ((new-backend
+             (if (polymuse-gptel-backend-p backend)
+                 (polymuse--clone-backend-with-model backend new-model)
+               ;; Non-gptel backend: just update the model slot in place
+               (progn (setf (polymuse-backend-model backend) new-model)
+                      backend))))
+        (setf (polymuse-review-state-backend review) new-backend)
+        (message "Reviewer %s switched to model %s" reviewer-id new-model)))))
+
 (define-derived-mode polymuse-suggestions-mode markdown-mode " Review"
   "Mode for displaying AI suggestions from Polymuse."
   (setq-local truncate-lines nil)
@@ -1996,6 +2086,8 @@ the backend via `polymuse--collect-gptel-tools' and gptel's native tool API."
 
 (define-key polymuse-suggestions-mode-map
             (kbd "C-c C-r e") #'polymuse-edit-instructions)
+(define-key polymuse-suggestions-mode-map
+            (kbd "C-c C-r m") #'polymuse-switch-model)
 (define-key polymuse-suggestions-mode-map
             (kbd "C-c C-r t") #'polymuse-reset-output)
 
