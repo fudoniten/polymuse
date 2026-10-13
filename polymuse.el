@@ -82,6 +82,7 @@
     (define-key map (kbd "C-c C-r o") #'polymuse-open-review)
     (define-key map (kbd "C-c C-r a") #'polymuse-add-reviewer)
     (define-key map (kbd "C-c C-r z") #'polymuse-reset-output)
+    (define-key map (kbd "C-c C-r x") #'polymuse-extend)
     map))
 
 ;;;###autoload
@@ -1090,8 +1091,11 @@ FORMAT defaults to `polymuse-prompt-format'."
   "Execute REQUEST to the mock BACKEND, returning a predefined response.
 
 This method is synchronous and immediately calls the callback with the
-mock response, making it suitable for testing without network calls."
+mock response, making it suitable for testing without network calls.
+When :stream is non-nil, the response is delivered as a single chunk
+followed by t, mirroring gptel's streaming protocol."
   (let* ((callback (plist-get args :callback))
+         (stream   (plist-get args :stream))
          (response-fn (polymuse-mock-backend-response-fn backend))
          (response (if response-fn
                        (funcall response-fn request)
@@ -1103,7 +1107,9 @@ mock response, making it suitable for testing without network calls."
                              (polymuse--serialize-prompt request)))
       (polymuse--debug-log "\n\nMOCK RESPONSE:\n\n%s\n\nEND RESPONSE\n\n" response))
     (when callback
-      (funcall callback response nil))
+      (funcall callback response nil)
+      (when stream
+        (funcall callback t nil)))
     response))
 
 (defun polymuse-find-backend (backend-id)
@@ -1392,6 +1398,62 @@ Pull from BUFFER buffer and PT point, or (current-buffer) & (point)."
   "Return the range of the current paragraph, from BUFFER or `(current-buffer)'."
   (polymuse--get-unit-wrapper #'backward-paragraph #'forward-paragraph buffer))
 
+(cl-defun polymuse--stream-request (backend prompt &key system tools label
+                                            on-begin on-chunk on-finish)
+  "Send PROMPT to BACKEND and route the response through callbacks.
+
+This is the shared request path for anything that streams an LLM
+response somewhere (reviews, continuations).  SYSTEM and TOOLS are
+passed through to `polymuse-request-review'.  LABEL identifies the
+request in error messages.
+
+ON-BEGIN is called with no arguments just before the first chunk.
+ON-CHUNK is called with each chunk of text (or with the whole response
+when not streaming).
+ON-FINISH is called exactly once, with non-nil SUCCESS when the request
+completed and produced content.
+
+Non-text events from gptel (reasoning blocks, tool results) are ignored
+rather than treated as errors."
+  (let ((first-chunk-p t)
+        (finished-p nil)
+        (got-content-p nil))
+    (cl-flet ((finish (success)
+                (unless finished-p
+                  (setq finished-p t)
+                  (when on-finish
+                    (funcall on-finish (and success got-content-p))))))
+      (polymuse-request-review
+       backend prompt
+       :system   system
+       :stream   polymuse-streaming
+       :tools    tools
+       :callback (lambda (response _info)
+                   (condition-case err
+                       (cond
+                        ;; A chunk (streaming) or the full response (non-streaming).
+                        ((and (stringp response) (> (length response) 0))
+                         (when first-chunk-p
+                           (setq first-chunk-p nil)
+                           (when on-begin (funcall on-begin)))
+                         (when on-chunk (funcall on-chunk response))
+                         (setq got-content-p t)
+                         ;; In non-streaming mode this single call is also completion.
+                         (unless polymuse-streaming
+                           (finish t)))
+                        ;; Stream complete.
+                        ((eq response t)
+                         (finish t))
+                        ;; Reasoning, tool calls/results: not part of the reply text.
+                        ((consp response) nil)
+                        ;; Error, abort or empty response.
+                        (t
+                         (finish nil)))
+                     (error
+                      (message "Polymuse: error handling response for %s: %S"
+                               (or label "request") err)
+                      (finish nil))))))))
+
 (defun polymuse--run-review (src-buffer review)
   "Submit review request for SRC-BUFFER to LLM per config in REVIEW.
 
@@ -1407,51 +1469,23 @@ Validates buffer is live before submitting request."
             (new-hash (polymuse--buffer-hash)))
         (if (and old-hash (string= old-hash new-hash))
             (when polymuse-debug (message "skipping review, buffer is unchanged"))
-          (let ((prompt (polymuse--compose-prompt review))
-                (tools  (polymuse--collect-gptel-tools))
-                (first-chunk-p t)
-                (finalized-p nil)
-                (got-content-p nil))
-            ;; Mark review as running BEFORE making the request
-            (setf (polymuse-review-state-status review) 'running)
-            (setf (polymuse-review-state-request-started-time review) (float-time))
-            (setf (polymuse-review-state-last-run-time review) (float-time))
-            ;; DON'T update hash yet - wait for successful response
-            (cl-flet ((finalize (success)
-                        (unless finalized-p
-                          (setq finalized-p t)
-                          (when (and success got-content-p)
-                            (setf (polymuse-review-state-last-hash review) new-hash))
-                          (setf (polymuse-review-state-status review) 'idle)
-                          (setf (polymuse-review-state-request-started-time review) nil))))
-              (polymuse-request-review
-               backend prompt
-               :system   (polymuse--active-system-prompt)
-               :stream   polymuse-streaming
-               :tools    tools
-               :callback (lambda (response _info)
-                           (condition-case err
-                               (cond
-                                ;; A chunk (streaming) or the full response (non-streaming).
-                                ((and (stringp response) (> (length response) 0))
-                                 (when first-chunk-p
-                                   (polymuse--display-review-begin review)
-                                   (setq first-chunk-p nil))
-                                 (polymuse--display-review-chunk review response)
-                                 (setq got-content-p t)
-                                 ;; In non-streaming mode this single call is also completion.
-                                 (unless polymuse-streaming
-                                   (finalize t)))
-                                ;; Stream complete.
-                                ((eq response t)
-                                 (finalize t))
-                                ;; Error or empty response.
-                                (t
-                                 (finalize nil)))
-                             (error
-                              (message "Polymuse: error handling response for review %s: %S"
-                                       (polymuse-review-state-id review) err)
-                              (finalize nil))))))))))))
+          ;; Mark review as running BEFORE making the request
+          (setf (polymuse-review-state-status review) 'running)
+          (setf (polymuse-review-state-request-started-time review) (float-time))
+          (setf (polymuse-review-state-last-run-time review) (float-time))
+          ;; DON'T update hash yet - wait for successful response
+          (polymuse--stream-request
+           backend (polymuse--compose-prompt review)
+           :system   (polymuse--active-system-prompt)
+           :tools    (polymuse--collect-gptel-tools)
+           :label    (format "review %s" (polymuse-review-state-id review))
+           :on-begin (lambda () (polymuse--display-review-begin review))
+           :on-chunk (lambda (chunk) (polymuse--display-review-chunk review chunk))
+           :on-finish (lambda (success)
+                        (when success
+                          (setf (polymuse-review-state-last-hash review) new-hash))
+                        (setf (polymuse-review-state-status review) 'idle)
+                        (setf (polymuse-review-state-request-started-time review) nil))))))))
 
 (defun polymuse--buffer-recently-active-p (buffer review-state)
   "Return t if BUFFER was recently active.
@@ -1883,6 +1917,180 @@ the backend via `polymuse--collect-gptel-tools' and gptel's native tool API."
            :include-previous-review polymuse-include-previous-review
            :final-instructions polymuse-final-instructions))))
 
+;;;;
+;; Extending the text
+;;;;
+
+(defcustom polymuse-extend-system-prompt
+  (string-join
+   '("You are a co-writer working alongside the user."
+     "When asked to continue a text, write only the continuation itself:"
+     "no preamble, no commentary, no headings, and don't repeat the existing text."
+     "Pick up exactly where the text leaves off, even mid-sentence.")
+   " ")
+  "System prompt used when asking the LLM to continue the buffer text."
+  :type 'string)
+
+(defcustom polymuse-extend-mode-prompts
+  '((prog-mode . "Continue the code from the cursor. Write the most plausible next code, consistent with the conventions, naming and idioms already in use. Output code only.")
+    (text-mode . "Continue the prose from the cursor, matching its voice, tense, point of view and style. This is a sketch to spark ideas rather than final text: feel free to take things somewhere interesting or unexpected, as long as it stays consistent with what has been established."))
+  "Mode-specific instructions for `polymuse-extend'.
+
+Matched against the buffer's major mode the same way as
+`polymuse-mode-prompts'."
+  :type '(alist :key-type symbol :value-type string))
+
+(defcustom polymuse-extend-length 200
+  "Approximate length, in words, of a prose continuation.
+
+Ignored for code, where the model decides how much to write."
+  :type 'integer)
+
+(defcustom polymuse-extend-forward-ratio 0.15
+  "Share of the extend context budget given to text after point.
+
+Text before point is what the model continues from, so it gets the
+rest. Set to 0 to never send text after point."
+  :type 'float)
+
+(defun polymuse--get-extend-mode-prompt ()
+  "Return the `polymuse-extend-mode-prompts' entry for the current major mode."
+  (or (seq-some (lambda (pair)
+                  (when (derived-mode-p (car pair))
+                    (cdr pair)))
+                polymuse-extend-mode-prompts)
+      (cdr (assq 'text-mode polymuse-extend-mode-prompts))))
+
+(defun polymuse--compose-extend-prompt-from-context (params)
+  "Build the continuation prompt string from explicit PARAMS.
+
+Pure function, so it can be tested without buffer state. PARAMS is a
+plist containing:
+  :mode-prompt    Mode-specific continuation instructions
+  :before         Text before point, which the model continues from
+  :after          Text after point (optional)
+  :major-mode     Symbol of the major mode
+  :length         Approximate length in words (optional)
+  :direction      User guidance for where to take it (optional)
+
+Unlike reviews, this always uses the XML-ish layout: the prompt is
+mostly raw text, which JSON escaping would only obscure."
+  (let ((mode-prompt (plist-get params :mode-prompt))
+        (before      (or (plist-get params :before) ""))
+        (after       (plist-get params :after))
+        (mode        (plist-get params :major-mode))
+        (len         (plist-get params :length))
+        (direction   (plist-get params :direction))
+        (has-after   nil))
+    (setq has-after (and after (not (string-empty-p (string-trim after)))))
+    (string-join
+     (delq nil
+           (list
+            (when (and mode-prompt (not (string-empty-p mode-prompt)))
+              (format "<instructions>\n%s\n</instructions>" mode-prompt))
+            (format "<text mode=\"%s\">\n<before_cursor>\n%s\n</before_cursor>%s\n</text>"
+                    (if mode (symbol-name mode) "")
+                    before
+                    (if has-after
+                        (format "\n<after_cursor>\n%s\n</after_cursor>" after)
+                      ""))
+            (format "<task>\n%s\n</task>"
+                    (string-join
+                     (delq nil
+                           (list
+                            "Continue the text from the exact end of `before_cursor`."
+                            (when has-after
+                              "The continuation should be able to lead into the text in `after_cursor`, which is for reference only; don't repeat it.")
+                            (when len
+                              (format "Aim for roughly %d words." len))
+                            (when (and direction (not (string-empty-p direction)))
+                              (format "Direction from the writer: %s" direction))))
+                     "\n"))))
+     "\n\n")))
+
+(defun polymuse--compose-extend-prompt (&optional direction)
+  "Build a continuation prompt from the text around point in the current buffer.
+
+DIRECTION is optional user guidance passed through to the prompt."
+  (let* ((mode-prompt (or (polymuse--get-extend-mode-prompt) ""))
+         (max-chars   (or polymuse-max-prompt-characters most-positive-fixnum))
+         (available   (max 0 (- max-chars (length mode-prompt) (length direction) 400)))
+         (context     (max 0 (- available
+                                (floor (* available polymuse-response-reserve-ratio)))))
+         (fwd-budget  (floor (* context (max 0 polymuse-extend-forward-ratio))))
+         (back-budget (- context fwd-budget))
+         (pt          (point))
+         ;; Whole paragraphs/sexps where they fit; otherwise a raw slice, so
+         ;; one oversized unit before point never leaves the model empty-handed.
+         (before (or (and (> back-budget 0)
+                          (funcall polymuse--prev-context-grabber back-budget nil pt))
+                     (cons (max (point-min) (- pt back-budget)) pt)))
+         (after  (when (> fwd-budget 0)
+                   (or (funcall polymuse--next-context-grabber fwd-budget nil pt)
+                       (cons pt (min (point-max) (+ pt fwd-budget)))))))
+    (polymuse--compose-extend-prompt-from-context
+     (list :mode-prompt mode-prompt
+           :before      (polymuse--region-string before)
+           :after       (and after (polymuse--region-string after))
+           :major-mode  major-mode
+           :length      (unless (polymuse--code-mode-p) polymuse-extend-length)
+           :direction   direction))))
+
+(defun polymuse--extend (review &optional direction)
+  "Ask REVIEW's backend to continue the current buffer from point.
+
+The continuation is streamed into REVIEW's output buffer, under a
+header that marks it as a continuation. DIRECTION is optional guidance
+for where to take the text."
+  (let ((backend (polymuse-review-state-backend review))
+        (id      (polymuse-review-state-id review)))
+    (unless backend (user-error "Polymuse: reviewer %s has no backend" id))
+    (when (and (eq (polymuse-review-state-status review) 'running)
+               (not (polymuse--review-stale-p review)))
+      (user-error "Polymuse: reviewer %s is busy; try again when it finishes" id))
+    (message "Requesting Polymuse continuation: %s" id)
+    ;; Mark the reviewer busy so a periodic review can't interleave its
+    ;; output with ours. The buffer hash is left alone: a continuation is
+    ;; not a review of the current text.
+    (setf (polymuse-review-state-status review) 'running)
+    (setf (polymuse-review-state-request-started-time review) (float-time))
+    (polymuse--stream-request
+     backend (polymuse--compose-extend-prompt direction)
+     :system   polymuse-extend-system-prompt
+     :tools    (polymuse--collect-gptel-tools)
+     :label    (format "continuation %s" id)
+     :on-begin (lambda ()
+                 (polymuse--display-review-begin
+                  review nil
+                  (if (and direction (not (string-empty-p direction)))
+                      (format "continuation (%s)" direction)
+                    "continuation")))
+     :on-chunk (lambda (chunk) (polymuse--display-review-chunk review chunk))
+     :on-finish (lambda (_success)
+                  (setf (polymuse-review-state-status review) 'idle)
+                  (setf (polymuse-review-state-request-started-time review) nil)))))
+
+;;;###autoload
+(defun polymuse-extend (&optional direction)
+  "Ask the LLM to continue the text from point.
+
+The continuation appears in the reviewer's output buffer rather than in
+your text: it's a source of ideas and twists, not text to keep. With a
+prefix argument, prompt for DIRECTION, guidance on where to take it
+\(e.g. \"introduce a complication\" or \"make it darker\").
+
+Called from a review output buffer, continues from point in the buffer
+under review."
+  (interactive
+   (list (when current-prefix-arg
+           (read-string "Direction for the continuation: "))))
+  (let* ((review (polymuse--select-review (current-buffer) "Continue with reviewer: "))
+         (src    (polymuse-review-state-source-buffer review)))
+    (unless (buffer-live-p src)
+      (user-error "Polymuse: the buffer under review is gone"))
+    (with-current-buffer src
+      (polymuse--extend review direction))))
+
 (defun polymuse--reviewed-buffer-p (&optional buffer)
   "Return t if a BUFFER is a buffer under review."
   (with-current-buffer (or buffer (current-buffer))
@@ -1899,8 +2107,10 @@ the backend via `polymuse--collect-gptel-tools' and gptel's native tool API."
     (let ((inhibit-read-only t))
       (erase-buffer))))
 
-(defun polymuse--select-review (buffer)
-  "Given a BUFFER under review, interactively select and return the ID of a review."
+(defun polymuse--select-review (buffer &optional prompt)
+  "Given a BUFFER under review, interactively select and return the ID of a review.
+
+PROMPT is the completion prompt used when there are several reviewers."
   (with-current-buffer buffer
     (if (polymuse--review-output-buffer-p buffer)
         polymuse--buffer-review-state
@@ -1911,7 +2121,7 @@ the backend via `polymuse--collect-gptel-tools' and gptel's native tool API."
           (_ (let* ((choices   (mapcar (lambda (state)
                                          (cons (polymuse-review-state-id state) state))
                                        reviews))
-                    (review-id (completing-read "Edit instructions for reviewer: "
+                    (review-id (completing-read (or prompt "Select reviewer: ")
                                                 (mapcar #'car choices) nil t)))
                (cdr (assoc review-id choices)))))))))
 
@@ -1952,7 +2162,7 @@ the backend via `polymuse--collect-gptel-tools' and gptel's native tool API."
   - If there are more than one, prompt the user to select which to edit."
   (interactive)
   (let* ((buf (current-buffer))
-         (review (polymuse--select-review buf)))
+         (review (polymuse--select-review buf "Edit instructions for reviewer: ")))
     (polymuse--edit-review-instructions review)))
 
 (defvar-local polymuse--buffer-review-state nil
@@ -2090,6 +2300,8 @@ share the same backend object are not affected."
             (kbd "C-c C-r m") #'polymuse-switch-model)
 (define-key polymuse-suggestions-mode-map
             (kbd "C-c C-r t") #'polymuse-reset-output)
+(define-key polymuse-suggestions-mode-map
+            (kbd "C-c C-r x") #'polymuse-extend)
 
 (define-derived-mode polymuse-instructions-mode markdown-mode " Prompt"
   "Mode for editing AI instruction prompt for Polymuse reviewer.")
@@ -2165,13 +2377,14 @@ Returns a string suitable for appending to a review buffer."
           "\n\n"
           response))
 
-(defun polymuse--display-review-begin (review &optional timestamp)
+(defun polymuse--display-review-begin (review &optional timestamp label)
   "Open a new review block in REVIEW's output buffer.
 
 Prepares the buffer (mode, truncation) and inserts the timestamped
 header. Subsequent content should be appended via
 `polymuse--display-review-chunk'. TIMESTAMP defaults to the current
-time."
+time. LABEL, if non-nil, is appended to the header to mark blocks
+that aren't ordinary reviews (e.g. continuations)."
   (let ((outbuf (polymuse-review-state-output-buffer review)))
     (unless (buffer-live-p outbuf)
       (error "Output buffer %s for review %s is not live"
@@ -2185,6 +2398,7 @@ time."
         (goto-char (point-max))
         (insert "\n\n>>> "
                 (format-time-string "%H:%M:%S" timestamp)
+                (if label (concat " · " label) "")
                 "\n\n")
         (polymuse--follow-output-buffer outbuf)))))
 

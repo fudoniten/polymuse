@@ -10,6 +10,7 @@ An AI-powered "over-the-shoulder" coding assistant for Emacs that provides conti
 - **Customizable review intervals** and instructions
 - **Streaming responses** appended live to a side review buffer
 - **Mode-specific prompts** for different file types (code vs. prose)
+- **On-demand continuations** of your text, shown in the review buffer as a source of ideas
 
 ## Requirements
 
@@ -53,6 +54,22 @@ When `polymuse-mode` is active:
 - `C-c C-r o` - Open review window
 - `C-c C-r a` - Add a new reviewer
 - `C-c C-r z` - Reset output buffer
+- `C-c C-r x` - Continue the text from point (`C-u` first to give it a direction)
+
+## Extending Your Text
+
+`C-c C-r x` (`polymuse-extend`) asks the reviewer's LLM to continue writing
+from point. The continuation streams into the review buffer, under a
+`>>> HH:MM:SS · continuation` header, rather than into your text. Use it to
+explore where a scene could go, then take or ignore what you like.
+
+With a prefix argument (`C-u C-c C-r x`) you're asked for a direction, such
+as "introduce a complication" or "make it darker". The same key works from
+the review buffer, so you can ask for another take without switching windows.
+
+Related settings: `polymuse-extend-length` (approximate words for prose,
+default 200), `polymuse-extend-system-prompt`, `polymuse-extend-mode-prompts`
+and `polymuse-extend-forward-ratio` (how much text after point to send).
 
 ## Configuration
 
