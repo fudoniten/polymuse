@@ -370,6 +370,139 @@ at request time via `polymuse--collect-gptel-tools'."
       (should response-received)
       (should (stringp received-response)))))
 
+;;;; Streaming Request Tests
+
+(defun polymuse-test--use-paragraph-grabbers ()
+  "Install the prose context grabbers in the current buffer.
+Normally `polymuse--enable' does this; tests set them up directly."
+  (setq-local polymuse--unit-grabber #'polymuse--get-unit-paragraph
+              polymuse--prev-context-grabber #'polymuse--get-context-before-point-paragraphs
+              polymuse--next-context-grabber #'polymuse--get-context-after-point-paragraphs))
+
+(ert-deftest polymuse-test-stream-request-callbacks ()
+  "Chunks are routed through the callbacks and finish fires once."
+  (dolist (streaming '(t nil))
+    (let ((polymuse-streaming streaming)
+          (events '()))
+      (polymuse--stream-request
+       (polymuse-create-mock-backend (lambda (_) "hello"))
+       "prompt"
+       :on-begin  (lambda () (push 'begin events))
+       :on-chunk  (lambda (c) (push c events))
+       :on-finish (lambda (ok) (push (list 'finish ok) events)))
+      (should (equal (nreverse events) '(begin "hello" (finish t)))))))
+
+(ert-deftest polymuse-test-stream-request-ignores-non-text-events ()
+  "Reasoning or tool events from gptel don't end the request early."
+  (let ((polymuse-streaming t)
+        (events '()))
+    (cl-letf (((symbol-function 'polymuse-request-review)
+               (lambda (_backend _request &rest args)
+                 (let ((cb (plist-get args :callback)))
+                   (funcall cb '(reasoning . "thinking...") nil)
+                   (funcall cb "answer" nil)
+                   (funcall cb t nil)))))
+      (polymuse--stream-request
+       'unused "prompt"
+       :on-chunk  (lambda (c) (push c events))
+       :on-finish (lambda (ok) (push (list 'finish ok) events))))
+    (should (equal (nreverse events) '("answer" (finish t))))))
+
+(ert-deftest polymuse-test-stream-request-failure ()
+  "An error response finishes with failure and no content."
+  (let ((polymuse-streaming t)
+        (result 'unset))
+    (cl-letf (((symbol-function 'polymuse-request-review)
+               (lambda (_backend _request &rest args)
+                 (funcall (plist-get args :callback) nil '(:status "500")))))
+      (polymuse--stream-request
+       'unused "prompt"
+       :on-finish (lambda (ok) (setq result ok))))
+    (should (null result))))
+
+(ert-deftest polymuse-test-run-review-displays-and-records-hash ()
+  "A review streams into the output buffer and records the buffer hash."
+  (polymuse-test-with-mock-review
+    (polymuse-test--use-paragraph-grabbers)
+    (insert "Some prose to review.")
+    (polymuse--run-review (current-buffer) test-review)
+    (should (eq (polymuse-review-state-status test-review) 'idle))
+    (should (equal (polymuse-review-state-last-hash test-review)
+                   (polymuse--buffer-hash)))
+    (with-current-buffer (polymuse-review-state-output-buffer test-review)
+      (should (string-match-p "Mock review response for testing\\."
+                              (buffer-string))))))
+
+;;;; Extend Tests
+
+(ert-deftest polymuse-test-compose-extend-prompt-from-context ()
+  "The continuation prompt carries the text, length and direction."
+  (let ((prompt (polymuse--compose-extend-prompt-from-context
+                 (list :mode-prompt "Continue the prose."
+                       :before "It was a dark and stormy night."
+                       :after nil
+                       :major-mode 'text-mode
+                       :length 150
+                       :direction "introduce a stranger"))))
+    (should (string-match-p "<instructions>\nContinue the prose.\n</instructions>" prompt))
+    (should (string-match-p "<before_cursor>\nIt was a dark and stormy night.\n</before_cursor>" prompt))
+    (should-not (string-match-p "after_cursor" prompt))
+    (should (string-match-p "roughly 150 words" prompt))
+    (should (string-match-p "Direction from the writer: introduce a stranger" prompt))))
+
+(ert-deftest polymuse-test-compose-extend-prompt-with-after-text ()
+  "Text after point is included only when non-blank."
+  (let ((with-after (polymuse--compose-extend-prompt-from-context
+                     (list :before "Start." :after "Later on." :major-mode 'text-mode)))
+        (blank-after (polymuse--compose-extend-prompt-from-context
+                      (list :before "Start." :after "  \n" :major-mode 'text-mode))))
+    (should (string-match-p "<after_cursor>\nLater on.\n</after_cursor>" with-after))
+    (should (string-match-p "lead into the text in `after_cursor`" with-after))
+    (should-not (string-match-p "after_cursor" blank-after))
+    (should-not (string-match-p "words" with-after))))
+
+(ert-deftest polymuse-test-compose-extend-prompt-uses-text-before-point ()
+  "The continuation is anchored at point, not at the end of the buffer."
+  (with-temp-buffer
+    (text-mode)
+    (polymuse-test--use-paragraph-grabbers)
+    (insert "First paragraph.\n\nSecond paragraph, where the cursor sits.")
+    (save-excursion (insert "\n\nThird paragraph."))
+    (let ((prompt (polymuse--compose-extend-prompt)))
+      (should (string-match-p "First paragraph" prompt))
+      (should (string-match-p "cursor sits\\.\n</before_cursor>" prompt))
+      (should (string-match-p "<after_cursor>\n\n*Third paragraph\\." prompt)))))
+
+(ert-deftest polymuse-test-extend-streams-into-review-buffer ()
+  "A continuation lands in the review buffer and leaves the hash alone."
+  (polymuse-test-with-isolated-state
+    (with-temp-buffer
+      (text-mode)
+      (polymuse-test--use-paragraph-grabbers)
+      (insert "The door creaked open.")
+      (let* ((sent nil)
+             (backend (polymuse-create-mock-backend
+                       (lambda (req) (setq sent req) "A cat walked in.")))
+             (review (polymuse-test-create-mock-review-state backend)))
+        (unwind-protect
+            (progn
+              (polymuse--extend review "make it funny")
+              (should (string-match-p "The door creaked open\\." sent))
+              (should (eq (polymuse-review-state-status review) 'idle))
+              (should (null (polymuse-review-state-last-hash review)))
+              (with-current-buffer (polymuse-review-state-output-buffer review)
+                (should (string-match-p "continuation (make it funny)" (buffer-string)))
+                (should (string-match-p "A cat walked in\\." (buffer-string)))))
+          (kill-buffer (polymuse-review-state-output-buffer review)))))))
+
+(ert-deftest polymuse-test-extend-refuses-when-busy ()
+  "A continuation won't interleave with a running review."
+  (polymuse-test-with-mock-review
+    (polymuse-test--use-paragraph-grabbers)
+    (setf (polymuse-review-state-status test-review) 'running)
+    (setf (polymuse-review-state-request-started-time test-review) (float-time))
+    (should-error (polymuse--extend test-review) :type 'user-error)))
+
 ;;;; Buffer Hash Tests
 
 (ert-deftest polymuse-test-buffer-hash-changes ()
